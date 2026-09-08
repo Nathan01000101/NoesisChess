@@ -111,3 +111,56 @@ use super::*;
         divide_perft(&mut board, 5);
     }
 }
+
+#[cfg(test)]
+mod fen_tests {
+    use crate::{from_fen, to_fen};
+
+    fn round_trip(fen: &str) {
+        let board = from_fen(fen);
+        let out = to_fen(&board);
+
+        let orig: Vec<&str> = fen.split(' ').collect();
+        let got: Vec<&str> = out.split(' ').collect();
+
+        assert_eq!(orig[0], got[0], "placement mismatch for {fen}");
+        assert_eq!(orig[1], got[1], "side to move mismatch for {fen}");
+        assert_eq!(orig[2], got[2], "castling rights mismatch for {fen}");
+        assert_eq!(orig[3], got[3], "en passant mismatch for {fen}");
+    }
+
+    #[test]
+    fn round_trip_start_position() {
+        round_trip("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    }
+
+    #[test]
+    fn round_trip_sparse_board() {
+        // fully-empty ranks in the middle, trailing empty squares on the last rank
+        round_trip("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    }
+
+    #[test]
+    fn round_trip_en_passant_white_to_move() {
+        // classic example: black just played ...d5, ep target d6
+        round_trip("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3");
+    }
+
+    #[test]
+    fn round_trip_en_passant_black_to_move() {
+        // white just played e4, ep target e3
+        round_trip("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+    }
+
+    #[test]
+    fn round_trip_no_castling_rights_with_rooks_present() {
+        // rooks and kings on their home squares, but rights explicitly withheld —
+        // makes sure rights come from board.state, not inferred from piece positions
+        round_trip("r3k2r/8/8/8/8/8/8/R3K2R w - - 0 1");
+    }
+
+    #[test]
+    fn round_trip_partial_castling_rights() {
+        round_trip("r3k2r/8/8/8/8/8/8/R3K2R w Kq - 0 1");
+    }
+}

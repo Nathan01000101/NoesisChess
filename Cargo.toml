@@ -9,3 +9,6 @@ rand = "0.9"
 rayon   = "1"
 dashmap = "6"
 rustc-hash = "2"
+
+[profile.release]
+debug = true
