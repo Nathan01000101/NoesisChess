@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::time::{Instant};
-use crate::{BLACK_SHORT, get_piece, is_piece};
+use crate::{BLACK_SHORT, MoveListBuf, get_piece, is_piece};
 use crate::BLACK_LONG;
 use crate::Board;
 use crate::PieceType;
@@ -52,6 +52,7 @@ impl Player for MinimaxAI {
     fn get_move(&self, board: &Board, side: Side) -> (u8,u8) {
         let start = Instant::now();
 
+        println!("tt table is %{} full", self.tt.lock().unwrap().len()/800_000_000);
         // cap transposition table growth
         if self.tt.lock().unwrap().len() > 800_000_000 {   
             self.tt.lock().unwrap().clear();
@@ -86,12 +87,13 @@ impl Player for MinimaxAI {
         let mut beta = i32::MAX;
 
         rand::srand(date::now() as u64);
-        let mut moves = get_all_moves(&mut b, side);
-        println!("root move count: {}", moves.len());
+        let mut moves = MoveListBuf::new() ;
+        get_all_moves(&mut b, side, &mut moves);
+        println!("root move count: {}", moves.len);
 
         // move ordering
         // victim_value * 10 - attacker_value
-        moves.sort_by_key(|mv| {
+        moves.data[..moves.len].sort_by_key(|mv| {
             match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
                 Some(victim) => {
                     let attacker_val = match if is_piece(board, mv.0) {Some(get_piece(board, mv.0))} else {None} {
@@ -104,10 +106,10 @@ impl Player for MinimaxAI {
             }
         });
 
-        for i in 0..moves.len(){
-            let undo = make_move(&mut b, moves[i].0,moves[i].1);
-            let depth_deduction = if i as f32 / moves.len() as f32 > 0.75 { 1 } else {0}; 
-            let mut eval = minimax(&mut b, self.depth.saturating_sub(1 - depth_deduction), 1,  alpha, beta, &self.zobrist, tt);
+        for i in 0..moves.len{
+            let undo = make_move(&mut b, moves.data[i].0,moves.data[i].1);
+            let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
+            let mut eval = minimax(&mut b, self.depth.saturating_sub((1 - bonus) as usize), 1,  alpha, beta, &self.zobrist, tt);
 
             // see if the move already exists in our move history
             if mh_guard.contains(&self.zobrist.hash(&b)){
@@ -125,9 +127,9 @@ impl Player for MinimaxAI {
             undo_move(&mut b, undo);
             if side == Side::White && eval > best_eval || side == Side::Black && eval < best_eval{
                 best_eval = eval;
-                best_move = moves[i];
+                best_move = moves.data[i];
             }
-             println!("{:?} side={:?} eval(post-penalty)={}", moves[i], side, eval); 
+             println!("{:?} side={:?} eval(post-penalty)={}", moves.data[i], side, eval); 
         }
         println!("CHOSE {:?} best_eval={}", best_move, best_eval);
         println!("single-threaded minimax took {}ms to think", start.elapsed().as_millis());
@@ -148,10 +150,9 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
         ztable: &ZobristTable,
         tt: &mut FxHashMap<u64, TTEntry>) -> i32 {
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
-    let hash = ztable.hash(board);
     let alpha_orig = alpha;
     let beta_orig = beta;
-
+    let hash = ztable.hash(board);
     // Only trust an entry searched at least as deep as we need.
     if let Some(entry) = tt.get(&hash) {
         if entry.depth >= depth {
@@ -168,12 +169,13 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
         return quiescence(board, ply, alpha, beta, ztable, tt);
     }
 
-    let mut moves = get_all_moves(board, side);
+    let mut moves = MoveListBuf::new();
+    get_all_moves(board, side, &mut moves);
     
 
     // move ordering
     // victim value * 10 - attacker value
-    moves.sort_by_key(|mv| {
+    moves.data[..moves.len].sort_by_key(|mv| {
         match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
             Some(victim) => {
                 let attacker_val = match if is_piece(board, mv.0) {Some(get_piece(board, mv.0))} else {None} {
@@ -187,7 +189,7 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
     });
 
     // mate check
-    if moves.is_empty() {
+    if moves.len == 0 {
         if is_in_check(board, side) {
             // side to move is mated; score from White's perspective
             return if board.state & WHITE_TO_MOVE != 0 { -500000 + ply  }
@@ -199,8 +201,8 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
 
     let value = if board.state & WHITE_TO_MOVE != 0 {
         let mut eval = i32::MIN;
-        for mv in &moves {
-            let undo = make_move(board, mv.0, mv.1);
+        for i in 0..moves.len {
+            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             eval = minimax(board, depth -1, ply + 1, alpha, beta, ztable, tt).max(eval);
             undo_move(board, undo);
 
@@ -210,8 +212,8 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
         eval
     } else {
         let mut eval = i32::MAX;
-        for mv in moves {
-            let undo = make_move(board, mv.0, mv.1);
+        for i in 0..moves.len {
+            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             eval = minimax(board, depth - 1, ply + 1, alpha, beta, ztable, tt).min(eval);
             undo_move(board, undo);
 
@@ -253,17 +255,17 @@ fn quiescence(
 
     // Generate moves. If in check, search ALL moves. Otherwise only captures.
     let mut all_legal: bool = false;
-    let mut moves: Vec<(u8, u8)> = Vec::new();
+    let mut moves: MoveListBuf = MoveListBuf::new();
     
     if in_check {
-        moves = get_all_moves(board, side);
+        get_all_moves(board, side, &mut moves);
         all_legal = true;
     } else {
-        moves = get_all_captures(board, side)  
+        get_all_captures(board, side, &mut moves);  
     };
 
     // Mate / stalemate detection when in check with no legal moves
-    if moves.is_empty() {
+    if moves.len == 0 {
         if in_check {
             return if side == Side::White { -500000 + ply } else { 500000 - ply };
         }
@@ -274,14 +276,14 @@ fn quiescence(
     }
 
     // MVV-style ordering: capture biggest victim first
-    moves.sort_by_key(|mv| match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
+    moves.data[..moves.len].sort_by_key(|mv| match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
         Some(p) => -piece_value(p, mv.1, board.moves),
         None => 0,
     });
 
     if side == Side::White {
-        for mv in moves {
-            let undo = make_move(board, mv.0, mv.1);
+        for i in 0..moves.len {
+            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let score = quiescence(board, ply + 1, alpha, beta, ztable, tt);
             undo_move(board, undo);
             if score >= beta { return beta; }
@@ -289,8 +291,8 @@ fn quiescence(
         }
         alpha
     } else {
-        for mv in moves {
-            let undo = make_move(board, mv.0, mv.1);
+        for i in 0..moves.len {
+            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let score = quiescence(board, ply + 1, alpha, beta, ztable, tt);
             undo_move(board, undo);
             if score <= alpha { return alpha; }
@@ -300,20 +302,36 @@ fn quiescence(
     }
 }
 
-pub fn evaluate(board: &Board) -> i32{
-    let mut score: i32 = 0;
-    for i in 0..64 {
-        if is_piece(board, i) {
-            let p = get_piece(board, i);
-            if p.color == Side::White {
-                score += piece_value(p, i, board.moves);
-            } else {
-                score -= piece_value(p, i, board.moves);
+pub fn evaluate(board: &Board) -> i32 {
+    let mut score = 0;
+    for color in 0..2 {
+        let side = if color == 0 { Side::White } else { Side::Black };
+        for pt in 0..6 {
+            let piece_type = [PieceType::King, PieceType::Queen, PieceType::Rook,
+                               PieceType::Bishop, PieceType::Knight, PieceType::Pawn][pt];
+            let mut bb = board.bitboards[side as usize][piece_type as usize];
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as u8;
+                let val = piece_value(Piece { piece_type, color: side }, sq, board.moves);
+                score += if side == Side::White { val } else { -val };
+                bb.0 &= bb.0 - 1;
             }
         }
     }
-
     score
+}
+
+fn calculate_depth_bonus(move_index: u8, root_moves: u8) -> i32{
+    let mut bonus = 0;
+
+    if move_index as f32 / root_moves as f32 > 0.7{
+        bonus -= 1;
+    }
+
+    if root_moves < 10{
+        bonus += 1;
+    }
+    bonus
 }
 
 fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{

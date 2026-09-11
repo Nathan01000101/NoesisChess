@@ -1,15 +1,14 @@
-use crate::Board;
-use crate::Side;
-use crate::get_all_moves;
-use crate::undo_move;
-use crate::make_move;
-use crate::new_board;
+
 
 #[cfg(test)]
 mod make_unmake_tests {
-    use crate::WHITE_TO_MOVE;
-
-use super::*;
+    use crate::{MoveListBuf, WHITE_TO_MOVE};
+    use crate::Board;
+    use crate::Side;
+    use crate::get_all_moves;
+    use crate::undo_move;
+    use crate::make_move;
+    use crate::new_board;
 
     /// Walks the move tree to `depth`, asserting board equality after every make/unmake.
     /// Returns the node count (a perft result) — useful for comparing against known values.
@@ -19,14 +18,15 @@ use super::*;
         }
 
         let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
-        let moves = get_all_moves(board, side);
+        let mut move_list: MoveListBuf = MoveListBuf::new();
+        get_all_moves(board, side, &mut move_list);
         let mut nodes = 0u64;
 
-        for mv in moves {
+        for i in 0..move_list.len {
             // snapshot the board BEFORE making the move
             let before = *board;
 
-            let undo = make_move(board, mv.0, mv.1);
+            let undo = make_move(board, move_list.data[i].0, move_list.data[i].1);
             nodes += perft_with_undo_check(board, depth - 1);
             undo_move(board, undo);
 
@@ -34,7 +34,7 @@ use super::*;
             assert_eq!(
                 *board, before,
                 "Board not restored after make/unmake of move {:?} -> {:?} at depth {}",
-                mv.0, mv.1, depth
+                move_list.data[i].0, move_list.data[i].1, depth
             );
         }
 
@@ -93,13 +93,14 @@ use super::*;
 
     fn divide_perft(board: &mut Board, depth: usize) {
         let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
-        let moves = get_all_moves(board, side);
+        let mut move_list: MoveListBuf = MoveListBuf::new();
+        get_all_moves(board, side, &mut move_list);
         let mut total = 0u64;
-        for mv in moves {
-            let undo = make_move(board, mv.0, mv.1);
+        for i in 0..move_list.len {
+            let undo = make_move(board, move_list.data[i].0, move_list.data[i].1);
             let nodes = perft_with_undo_check(board, depth - 1);
             undo_move(board, undo);
-            println!("{:?} -> {:?}: {}", mv.0, mv.1, nodes);
+            println!("{:?} -> {:?}: {}", move_list.data[i].0, move_list.data[i].1, nodes);
             total += nodes;
         }
         println!("total: {}", total);

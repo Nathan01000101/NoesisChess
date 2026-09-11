@@ -7,7 +7,7 @@ pub struct HumanPlayer;
 impl Player for HumanPlayer {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn get_move(&self, board: &Board, side: Side) -> (u8, u8) {
+    fn get_move(&self, _board: &Board, _side: Side) -> (u8, u8) {
         todo!();
     }
 

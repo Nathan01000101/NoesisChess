@@ -39,6 +39,8 @@ const KNIGHT_OFFSETS: [(i16, i16); 8] = [
 ];
 const KNIGHT_MOVES: [Bitboard; 64] = build_knight_attacks();
 
+const PAWN_MOVES: [[Bitboard; 64]; 2] = build_pawn_attacks();
+
 const KING_OFFSETS: [(i16, i16); 8] = [
     (-1, -1), (-1, 0), (-1, 1), (0, -1),
     (0, 1), (1, -1), (1, 0), (1, 1),
@@ -87,6 +89,18 @@ impl MoveBuf {
     fn push(&mut self, sq: u8) { self.data[self.len] = sq; self.len += 1; }
 }
 
+struct MoveListBuf {
+    data: [(u8, u8); 218],
+    len: usize,
+}
+impl MoveListBuf {
+    fn new() -> Self { Self { data: [(0, 0); 218], len: 0 } }
+    fn push(&mut self, from: u8, to: u8) {
+        self.data[self.len] = (from, to);
+        self.len += 1;
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Piece {
     piece_type: PieceType,
@@ -100,6 +114,7 @@ struct Board{
     // 0 -> white   1 -> black
     // 0 -> king    1 -> queen  2 -> rook   3 -> bishop 4 -> knight 5 -> pawn
     bitboards: [[Bitboard; 6]; 2],
+    occupied: u64,
     moves: u8,
     en_passant_target: Option<u8>,
     state: u8 
@@ -130,14 +145,7 @@ fn new_board() -> Board {
 }
 
 fn is_piece(board: &Board, coord: u8) -> bool {
-    for side in board.bitboards{
-        for bb in side{
-            if bb.get(coord){
-            return true;
-            }
-        }
-    }
-    false
+    board.occupied & 1 << coord != 0
 }
 
 fn get_piece(board: &Board, coord: u8) -> Piece {
@@ -168,7 +176,7 @@ fn get_side_bitboard(board: &Board, side: Side) -> Bitboard{
 }
 
 fn from_fen(fen: &str) -> Board {
-    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], moves: 0, en_passant_target: None, state: 0b10000 };
+    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], occupied: 0, moves: 0, en_passant_target: None, state: 0b10000 };
 
     let parts: Vec<&str> = fen.split(' ').collect();
     let placements = parts[0];
@@ -191,6 +199,7 @@ fn from_fen(fen: &str) -> Board {
         let p_type = char_to_piece_type(&c);
         let square = (rank as u8) * 8 + file;
         board.bitboards[side as usize][p_type as usize].set(square);
+        board.occupied |= 1 << (rank as u8 * 8 + file) as usize;
         file += 1;
     }
 
@@ -315,6 +324,40 @@ const fn build_knight_attacks() -> [Bitboard; 64]{
         }
         i += 1;
     }
+    bitboards
+}
+
+const fn build_pawn_attacks() -> [[Bitboard; 64]; 2]{
+    let mut bitboards = [[Bitboard::EMPTY; 64]; 2];    
+    let mut i = 8;
+    
+    //white pawns
+    while i < 56{
+
+        if i % 8 != 0{
+            bitboards[0][i].0 |= 1 << (i + 7);
+        }
+        if i % 8 != 7{
+            bitboards[0][i].0 |= 1 << (i + 9);
+        }
+
+        i += 1;
+    }
+    
+    i = 8;
+
+    //black pawns
+    while i < 56{
+
+        if i % 8 != 0{
+            bitboards[1][i].0 |= 1 << (i - 9);
+        }
+        if i % 8 != 7{
+            bitboards[1][i].0 |= 1 << (i - 7);
+        }
+        i += 1;
+    }
+
     bitboards
 }
 
@@ -460,7 +503,7 @@ fn ray_march(origin: u8, direction: (i16, i16), enemy_bitboard: Bitboard, friend
     }
 }
 
-fn ray_march_captures_only(origin: u8, direction: (i16, i16), enemy_bitboard: Bitboard, friendly_bitboard: Bitboard) -> Vec<u8>{
+fn ray_march_captures_only(origin: u8, direction: (i16, i16), enemy_bitboard: Bitboard, friendly_bitboard: Bitboard, buffer: &mut MoveBuf){
     let mut bb = match direction {
         (-1,  1)    => DIAGONAL_MOVES[origin as usize][DiagonalDirections::SouthEast as usize],
         ( 1,  1)    => DIAGONAL_MOVES[origin as usize][DiagonalDirections::NorthEast as usize],
@@ -474,8 +517,6 @@ fn ray_march_captures_only(origin: u8, direction: (i16, i16), enemy_bitboard: Bi
     };
     let delta = direction.0 * 8 + direction.1;
 
-    let mut valid = Vec::new();
-
     let occupied = enemy_bitboard.0 | friendly_bitboard.0;
     if delta > 0{
         while bb.0 != 0{
@@ -483,9 +524,9 @@ fn ray_march_captures_only(origin: u8, direction: (i16, i16), enemy_bitboard: Bi
 
             if occupied & (1 << bit_position) != 0{
                 if enemy_bitboard.0 & (1 << bit_position) != 0{
-                    valid.push(bit_position as u8);
+                    buffer.push(bit_position as u8);
                 }
-                return valid;
+                return;
             }
             bb.0 ^= 1 << bit_position;
         }
@@ -495,14 +536,13 @@ fn ray_march_captures_only(origin: u8, direction: (i16, i16), enemy_bitboard: Bi
 
             if occupied & (1 << bit_position) != 0{
                 if enemy_bitboard.0 & (1 << bit_position) != 0{
-                    valid.push(bit_position as u8);
+                    buffer.push(bit_position as u8);
                 }
-                return valid;
+                return;
             }
             bb.0 ^= 1 << bit_position;
         }
     }
-    valid
 }
 
 // determines if a side is in check with a given board state
@@ -510,13 +550,11 @@ fn is_in_check(board: &Board, side: Side) -> bool {
     
     let enemy = if side == Side::White {Side::Black} else {Side::White};
     let king: u8 = board.bitboards[side as usize][PieceType::King as usize].0.trailing_zeros() as u8;
-
     is_square_attacked(board, king, enemy)
 }
 
 // determines if a given square is attacked by a given side
 fn is_square_attacked(board: &Board, square: u8, side: Side) -> bool{
-    
     // pawns?
     let dir: i16 = if side == Side::White {-8} else {8};
     if square % 8 != 0{
@@ -546,11 +584,12 @@ fn is_square_attacked(board: &Board, square: u8, side: Side) -> bool{
     let our_side = if side == Side::White {Side::Black} else {Side::White};
     let friendly_bb = get_side_bitboard(board, our_side);
     let enemy_bb = get_side_bitboard(board, side);
+    
     for dir in STRAIGHT_DIRS{
-        let rm = ray_march_captures_only(square, dir, enemy_bb, friendly_bb);
-        if rm.len() != 0{
-            let blocker = get_piece(board, rm[rm.len()-1]);
-
+        let mut move_buffer = MoveBuf::new();
+        ray_march_captures_only(square, dir, enemy_bb, friendly_bb, &mut move_buffer);
+        if move_buffer.len != 0{
+            let blocker = get_piece(board, move_buffer.data[0]);
             if blocker.piece_type == PieceType::Queen || blocker.piece_type == PieceType::Rook{
                 return true;
             }
@@ -563,10 +602,10 @@ fn is_square_attacked(board: &Board, square: u8, side: Side) -> bool{
     let friendly_bb = get_side_bitboard(board, our_side);
     let enemy_bb = get_side_bitboard(board, side);
     for dir in DIAGONAL_DIRS{
-        let rm = ray_march_captures_only(square, dir, enemy_bb, friendly_bb);
-        if rm.len() != 0{
-            let blocker = get_piece(board, rm[rm.len()-1]);
-
+        let mut move_buffer = MoveBuf::new();
+        ray_march_captures_only(square, dir, enemy_bb, friendly_bb, &mut move_buffer);
+        if move_buffer.len != 0{
+            let blocker = get_piece(board, move_buffer.data[0]);
             if blocker.piece_type == PieceType::Queen || blocker.piece_type == PieceType::Bishop{
                 return true;
             }
@@ -609,6 +648,7 @@ fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
                     undo.captured_piece = Some(captured_piece);
                     captured_bit = ((old / 8) * 8) + (new - (new/8) * 8);
                     board.bitboards[captured_piece.color as usize][captured_piece.piece_type as usize].0 &= !(1 << ((old / 8) * 8) + (new - (new/8) * 8));
+                    board.occupied &= !(1 << ((old / 8) * 8) + (new - (new/8) * 8));
                 } 
             }
 
@@ -627,9 +667,13 @@ fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
             if delta == 2{
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 7);
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8 + 5;
+                board.occupied &= !(1 << row * 8 + 7);
+                board.occupied |= 1 << row * 8 + 5;
             } else if delta == -2 {
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 0);
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8 + 3;
+                board.occupied &= !(1 << row * 8 + 0);
+                board.occupied |= 1 << row * 8 + 3;
             }
         } else if p.piece_type == PieceType::Rook {
             if p.color == Side::White {
@@ -663,9 +707,12 @@ fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
 
         board.bitboards[p.color as usize][p.piece_type as usize].0 |= 1 << new;
         board.bitboards[p.color as usize][undo.moving_piece_before.piece_type as usize].0 &= !(1 << old);
+        board.occupied &= !(1 << old);
         if undo.captured_piece != None{
             board.bitboards[undo.captured_piece.unwrap().color as usize][undo.captured_piece.unwrap().piece_type as usize].0 &= !(1 << captured_bit);
+            board.occupied &= !(1 << captured_bit);
         }
+        board.occupied |= 1 << new;
         undo
     }else{
         panic!("CANNOT MOVE EMPTY SQUARE");
@@ -681,6 +728,8 @@ fn undo_move(board: &mut Board, undo: Undo){
 
     board.bitboards[undo.moving_piece_before.color as usize][undo.moving_piece_before.piece_type as usize].0 |= 1 << undo.last_move.from;
     board.bitboards[undo.moving_piece_before.color as usize][current_piece.piece_type as usize].0 &= !(1 << undo.last_move.to);
+    board.occupied |= 1 << undo.last_move.from;
+    board.occupied &= !(1 << undo.last_move.to); 
     
     if undo.captured_piece == None{
         if undo.moving_piece_before.piece_type == PieceType::King {
@@ -690,9 +739,13 @@ fn undo_move(board: &mut Board, undo: Undo){
             if delta == 2 {
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8 + 7;
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 5);
+                board.occupied |= 1 << row * 8 + 7;
+                board.occupied &= !(1 << row * 8 + 5);
             } else if delta == -2 {
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8;
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 3);
+                board.occupied |= 1 << row * 8;
+                board.occupied &= !(1 << row * 8 + 3);
             }
         }
     }else{
@@ -703,8 +756,10 @@ fn undo_move(board: &mut Board, undo: Undo){
         if is_en_passant {
             let delta_col = (undo.last_move.to % 8) as i16 - (undo.last_move.from % 8) as i16;
             board.bitboards[undo.captured_piece.unwrap().color as usize][undo.captured_piece.unwrap().piece_type as usize].0 |= 1 << (undo.last_move.from as i16 + delta_col) as u8;
+            board.occupied |= 1 << (undo.last_move.from as i16 + delta_col) as u8;
         } else {
             board.bitboards[undo.captured_piece.unwrap().color as usize][undo.captured_piece.unwrap().piece_type as usize].0 |= 1 << undo.last_move.to;
+            board.occupied |= 1 << undo.last_move.to;
         }
     }
 }
@@ -747,51 +802,37 @@ fn get_pseudo_legal_moves(board: &Board, coord: u8, list: &mut MoveBuf){
                 }
             },
             PieceType::Pawn => {
-                let enemy = get_side_bitboard(board, if p.color == Side::White {Side::Black} else {Side::White});
-                if p.color == Side::White{
-                    if !is_piece(board, coord + 8){
-                        list.push(coord + 8);
-                        if coord / 8 == 1{
-                            if !is_piece(board, coord + 16){
-                                list.push(coord + 16);
-                            }
-                        }
-                    }
 
-                    if coord % 8 != 0{
-                        if enemy.get(coord + 7) || (board.en_passant_target.is_some() && board.en_passant_target.unwrap() == coord + 7){
-                            list.push(coord + 7);
-                        }
-                    }
+                // capture moves
+                let enemy = get_side_bitboard(board, if p.color == Side::White {Side::Black} else {Side::White}).0; 
+                let possible = PAWN_MOVES[p.color as usize][coord as usize];
+                let side_to_move = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
+                let ep_bit = if board.en_passant_target.is_some() && p.color == side_to_move {
+                    1 << board.en_passant_target.unwrap()
+                } else { 0 };
 
-                    if coord % 8 != 7{
-                        if enemy.get(coord + 9) || (board.en_passant_target.is_some() && board.en_passant_target.unwrap() == coord + 9){
-                            list.push(coord + 9);
+                let mut valid = (enemy | ep_bit) & possible.0;
+
+                while valid != 0{
+                    list.push(valid.trailing_zeros() as u8);
+                    valid ^= 1 << valid.trailing_zeros();
+                }
+
+                // move forward
+                let forward:i32 = if p.color == Side::White { 8 } else { -8 };
+                let friendly = get_side_bitboard(board, p.color);
+
+                if (enemy | friendly.0) & (1 << (coord as i32 + forward) as u8) == 0{
+                    list.push((coord as i32 + forward) as u8);
+                    let starting_rank = if p.color == Side::White { 1 } else { 6 };
+                    if coord / 8 == starting_rank{
+                        if (enemy | friendly.0) & (1 << ((coord as i32 + forward*2)) as u8) == 0{
+                            list.push(((coord as i32 + forward*2)) as u8);
                         }
                     }
                     
-                }else{
-                    if !is_piece(board, coord - 8){
-                        list.push(coord - 8);
-                        if coord / 8 == 6{
-                            if !is_piece(board, coord - 16){
-                                list.push(coord - 16);
-                            }
-                        }
-                    }
-
-                    if coord % 8 != 0{
-                        if enemy.get(coord - 9) || (board.en_passant_target.is_some() && board.en_passant_target.unwrap() == coord - 9){
-                            list.push(coord - 9);
-                        }
-                    }
-
-                    if coord % 8 != 7{
-                        if enemy.get(coord - 7) || (board.en_passant_target.is_some() && board.en_passant_target.unwrap() == coord - 7){
-                            list.push(coord - 7);
-                        }
-                    }
                 }
+
             },
             PieceType::Queen => {
                 let mut move_buffer = MoveBuf::new();
@@ -958,8 +999,7 @@ fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
 }
 
 // gets all captures a side can make ((from), (to))
-fn get_all_captures(board: &mut Board, side: Side) -> Vec<(u8, u8)> {
-    let mut moves: Vec<(u8, u8)> = Vec::with_capacity(128);
+fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf) {
     let mut friendly_pieces = get_side_bitboard(board, side);
     let mut buf = MoveBuf::new();
     while friendly_pieces.0 != 0{
@@ -967,16 +1007,14 @@ fn get_all_captures(board: &mut Board, side: Side) -> Vec<(u8, u8)> {
         buf.len = 0;
         get_capture_moves(board, bit as u8, &mut buf);
         for i in 0..buf.len{
-            moves.push((bit as u8, buf.data[i]));
+            buffer.push(bit as u8, buf.data[i]);
         }
         friendly_pieces.0 ^= 1 << bit;
     }
-    moves
 }
 
 // gets all moves that a side can make ((from), (to))
-fn get_all_moves(board: &mut Board, side: Side) -> Vec<(u8, u8)>{
-    let mut moves: Vec<(u8, u8)> = Vec::with_capacity(218);
+fn get_all_moves(board: &mut Board, side: Side, buffer: &mut MoveListBuf){
     let currently_in_check = is_in_check(board, side);
     let mut friendly_pieces = get_side_bitboard(board, side);
     let mut buf = MoveBuf::new();
@@ -985,12 +1023,26 @@ fn get_all_moves(board: &mut Board, side: Side) -> Vec<(u8, u8)>{
         buf.len = 0;
         get_valid_moves(board, bit as u8, currently_in_check, &mut buf);
         for i in 0..buf.len{
-            moves.push((bit as u8, buf.data[i]));
+            buffer.push(bit as u8, buf.data[i]);
         }
         friendly_pieces.0 ^= 1 << bit;
     }
+}
 
-    moves
+// gets num of moves that a side can make
+fn get_move_count(board: &mut Board, side: Side) -> u8{
+    let currently_in_check = is_in_check(board, side);
+    let mut friendly_pieces = get_side_bitboard(board, side);
+    let mut buf = MoveBuf::new();
+    let mut count = 0;
+    while friendly_pieces.0 != 0{
+        let bit = friendly_pieces.0.trailing_zeros();
+        buf.len = 0;
+        get_valid_moves(board, bit as u8, currently_in_check, &mut buf);
+        count += buf.len;
+        friendly_pieces.0 ^= 1 << bit;
+    }
+    count as u8
 }
 
 fn draw_board(tile_size: f32) {
@@ -1217,7 +1269,7 @@ async fn main() {
                         let is_white = Arc::ptr_eq(&current_player, &player1); 
                         let opposite_side = if is_white {Side::Black} else {Side::White};
 
-                        if get_all_moves(&mut board, opposite_side).len() == 0{ 
+                        if get_move_count(&mut board, opposite_side) == 0{ 
                             if is_in_check(&board, opposite_side){ // checkmate
                                 game_over = true;
                                 winner = Some(is_white); // true if white, false if black
@@ -1283,7 +1335,7 @@ async fn main() {
                     let is_white = Arc::ptr_eq(&current_player, &player1); 
                     let opposite_side = if is_white {Side::Black} else {Side::White};
 
-                    if get_all_moves(&mut board, opposite_side).len() == 0{ 
+                    if get_move_count(&mut board, opposite_side) == 0{ 
                         if is_in_check(&board, opposite_side){ // checkmate
                             game_over = true;
                             winner = Some(is_white); // true if white, false if black
