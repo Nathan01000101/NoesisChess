@@ -17,6 +17,15 @@ const WINDOW_SIZE: f32 = 600.0;
 pub const FALLBACK_DEPTH: usize = 5;
 
 fn main() {
+println!(r#" Thank you for using
+     __                _     
+  /\ \ \___   ___  ___(_)___ 
+ /  \/ / _ \ / _ \/ __| / __|
+/ /\  / (_) |  __/\__ \ \__ \
+\_\ \/ \___/ \___||___/_|___/
+"#);
+println!("\n Engine built by: Nathan E.");
+println!("\n 0.29");
     let config = config::Config::from_args();
 
     if config.headless {
