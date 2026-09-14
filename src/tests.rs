@@ -2,13 +2,9 @@
 
 #[cfg(test)]
 mod make_unmake_tests {
-    use crate::{MoveListBuf, WHITE_TO_MOVE};
-    use crate::Board;
-    use crate::Side;
-    use crate::get_all_moves;
-    use crate::undo_move;
-    use crate::make_move;
-    use crate::new_board;
+    use crate::types::{MoveListBuf, WHITE_TO_MOVE, Board, Side};
+    use crate::board::{new_board, make_move, undo_move};
+    use crate::movegen::get_all_moves;
 
     /// Walks the move tree to `depth`, asserting board equality after every make/unmake.
     /// Returns the node count (a perft result) — useful for comparing against known values.
@@ -62,7 +58,7 @@ mod make_unmake_tests {
         let nodes = perft_with_undo_check(&mut board, 3);
         assert_eq!(nodes, 8902, "Depth 3 from start should be 8902 nodes");
     }
-
+    
     #[test]
     fn roundtrip_from_starting_position_depth_4() {
         let mut board = new_board();
@@ -115,7 +111,7 @@ mod make_unmake_tests {
 
 #[cfg(test)]
 mod fen_tests {
-    use crate::{from_fen, to_fen};
+    use crate::board::{from_fen, to_fen};
 
     fn round_trip(fen: &str) {
         let board = from_fen(fen);

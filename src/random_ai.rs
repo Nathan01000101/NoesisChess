@@ -3,8 +3,8 @@ use std::thread;
 use std::time::Duration;
 use macroquad::{ prelude::*};
 use macroquad::miniquad::date;
-use crate::{Board, MoveListBuf, get_all_moves};
-use crate::Side;
+use crate::types::{Board,Side, MoveListBuf};
+use crate::movegen::get_all_moves;
 use crate::ai::Player;
 
 pub struct RandomAI;

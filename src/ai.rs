@@ -1,6 +1,6 @@
 use std::any::Any;
-use crate::Board;
-use crate::Side;
+use crate::types::Board;
+use crate::types::Side;
 
 pub trait Player {
     fn as_any(&self) -> &dyn Any;

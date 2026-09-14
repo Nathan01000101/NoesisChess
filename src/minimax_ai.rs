@@ -4,24 +4,14 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::time::{Instant};
-use crate::{BLACK_SHORT, MoveListBuf, get_piece, is_piece};
-use crate::BLACK_LONG;
-use crate::Board;
-use crate::PieceType;
-use crate::Piece;
-use crate::Side;
-use crate::WHITE_SHORT;
-use crate::WHITE_TO_MOVE;
-use crate::WHITE_LONG;
+use crate::types::{Board, PieceType, Piece, Side, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
+use crate::board::{get_piece, make_move, undo_move, to_fen};
+use crate::movegen::{get_all_moves, get_all_captures, is_in_check};
+
 use crate::ai::Player;
-use crate::undo_move;
+
 use macroquad::{ prelude::*};
 use macroquad::miniquad::date;
-use crate::get_all_moves;
-use crate::get_all_captures;
-use crate::make_move;
-use crate::is_in_check;
-use crate::to_fen;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
 

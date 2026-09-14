@@ -1,6 +1,5 @@
 use std::any::Any;
-use crate::Board;
-use crate::Side;
+use crate::types::{Board, Side};
 use crate::ai::Player;
 
 pub struct HumanPlayer;
