@@ -27,7 +27,6 @@ pub struct MinimaxAI {
 impl MinimaxAI {
     pub fn new(depth: usize) -> Self{
         rand::srand(date::now() as u64);
-        println!("hello?");
         Self {
             depth,
             opening_book: build_book(),
