@@ -25,7 +25,18 @@ pub struct MoveBuf {
 }
 impl MoveBuf {
     pub fn new() -> Self { Self { data: [0; 32], len: 0 } }
-    pub fn push(&mut self, sq: u8) { self.data[self.len] = sq; self.len += 1; }
+    
+    #[inline(always)]
+    fn push(&mut self, sq: u8) {
+        debug_assert!(self.len < self.data.len(), "MoveBuf overflow");
+        // The things we do for performance. 
+        // Technically len should never exceed 32, if this panics it is most certainly just a smoking gun
+        // and not the root problem
+        unsafe {
+            *self.data.get_unchecked_mut(self.len) = sq;
+        }
+        self.len += 1;
+    }
 }
 
 pub struct MoveListBuf {
@@ -34,8 +45,13 @@ pub struct MoveListBuf {
 }
 impl MoveListBuf {
     pub fn new() -> Self { Self { data: [(0, 0); 218], len: 0 } }
-    pub fn push(&mut self, from: u8, to: u8) {
-        self.data[self.len] = (from, to);
+
+    #[inline(always)]
+    fn push(&mut self, from: u8, to: u8) {
+        debug_assert!(self.len < self.data.len(), "MoveListBuf overflow");
+        unsafe {
+            *self.data.get_unchecked_mut(self.len) = (from, to);
+        }
         self.len += 1;
     }
 }
