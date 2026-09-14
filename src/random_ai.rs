@@ -11,7 +11,7 @@ pub struct RandomAI;
 impl Player for RandomAI {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn get_move(&self, board: &Board, side: Side) -> (u8, u8) {
+    fn get_move(&self, board: &Board, side: Side, time_remaining: std::time::Duration, increment: std::time::Duration) -> (u8, u8) {
         let mut moves = MoveListBuf::new();
         let mut b = board.clone();
         get_all_moves(&mut b, side, &mut moves);

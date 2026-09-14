@@ -11,11 +11,14 @@ use crate::types::{WHITE_TO_MOVE, Board, Undo, PieceType, Piece, Side};
 use crate::board::{get_piece, from_fen, new_board, make_move};
 use crate::movegen::{get_move_count, is_in_check, get_valid_moves_standalone};
 use crate::render::{draw_board, draw_moves, draw_pieces};
-use crate::config::{self, Config};
+use crate::config::{self, Config, make_player};
 use crate::assets::{self, Assets};
 use crate::human::HumanPlayer;
 use crate::ai::Player;
 use crate::minimax_ai;
+
+const ENGINE_NAME: &str = "Neosis 0.29";
+const ENGINE_AUTHORS: &str = "Nathan E.";
 
 struct MoveOutcome {
     game_over: bool,
@@ -237,26 +240,14 @@ pub async fn run(config: Config) {
     }
 }
 
+// UCI SUPPORT
 pub fn run_headless(config: Config) {
-    let mut board = from_fen(&config.fen);
-    let player1 = config::make_player(&config.white, config.depth);
-    let player2 = config::make_player(&config.black, config.depth);
-
+    let instance = make_player("minimax", config.depth);
+    let mut board = new_board();
+    let mut side = Side::White;
+    
     loop {
-        let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
-        let player = if side == Side::White { &player1 } else { &player2 };
-
-        let mv = player.get_move(&board, side);
-        make_move(&mut board, mv.0, mv.1);
-
-        let opponent = if side == Side::White { Side::Black } else { Side::White };
-        if get_move_count(&mut board, opponent) == 0 {
-            if is_in_check(&board, opponent) {
-                println!("{:?} wins", side);
-            } else {
-                println!("draw");
-            }
-            break;
-        }
+        
     }
 }
+

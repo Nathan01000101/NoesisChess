@@ -39,9 +39,9 @@ impl MinimaxAI {
 }
 impl Player for MinimaxAI {
     fn as_any(&self) -> &dyn Any { self }
-    fn get_move(&self, board: &Board, side: Side) -> (u8,u8) {
+    fn get_move(&self, board: &Board, side: Side, time_remaining: std::time::Duration, increment: std::time::Duration) -> (u8,u8) {
         let start = Instant::now();
-
+        let time_budget = compute_time_budget(time_remaining.as_millis(), increment.as_millis(), board.moves);
         println!("tt table is %{:.2} full", (self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 100.0);
         // cap transposition table growth
         if self.tt.lock().unwrap().len() > MAX_TABLE_SIZE {   
@@ -327,6 +327,20 @@ fn calculate_depth_bonus(move_index: u8, root_moves: u8) -> i32{
         bonus += 1;
     }
     bonus
+}
+
+fn compute_time_budget(time_left_ms: u128, increment_ms: u128, moves_played: u8) -> u128 {
+    const SAFETY_MARGIN_MS: u128 = 50;   // never spend all time 
+    const MIN_BUDGET_MS: u128 = 20;      // min time 
+
+    let assumed_moves_left: u128 = if moves_played < 40 { 30 } else { 15 };
+
+    let base = time_left_ms / assumed_moves_left;
+    let budget = base + increment_ms;
+
+    let budget = budget.min(time_left_ms.saturating_sub(SAFETY_MARGIN_MS));
+
+    budget.max(MIN_BUDGET_MS)
 }
 
 fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{
