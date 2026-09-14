@@ -25,7 +25,7 @@ println!(r#" Thank you for using
 \_\ \/ \___/ \___||___/_|___/
 "#);
 println!("\n Engine built by: Nathan E.");
-println!("\n 0.29");
+println!("  Version 0.29-dev 2026-09-14");
     let config = config::Config::from_args();
 
     if config.headless {
