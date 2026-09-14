@@ -57,7 +57,7 @@ fn piece_label(piece: &Piece) -> &str {
 pub fn draw_pieces(board: &Board, font: &Font, tile_size: f32, flipped: bool) {
     for row in 0..8 {
         for col in 0..8 {
-            if is_piece(board, row*8 + col){
+            if board.is_piece(row*8 + col){
                 let piece = get_piece(board, row * 8 + col);
                 let (draw_col, draw_row) = if flipped {
                     (7 - col, row)

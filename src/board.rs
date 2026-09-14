@@ -6,25 +6,8 @@ pub fn new_board() -> Board {
     from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
 }
 
-pub fn get_piece(board: &Board, coord: u8) -> Piece {
-    for i in 0..2 {
-        for j in 0..6 {
-            if board.bitboards[i][j].get(coord) {
-                let color = if i == 0 { Side::White } else { Side::Black };
-                let piece_type = match j {
-                    0 => PieceType::King,
-                    1 => PieceType::Queen,
-                    2 => PieceType::Rook,
-                    3 => PieceType::Bishop,
-                    4 => PieceType::Knight,
-                    5 => PieceType::Pawn,
-                    _ => unreachable!(),
-                };
-                return Piece { piece_type, color };
-            }
-        }
-    }
-    panic!("tried to fetch empty piece");
+pub fn get_piece(board: &Board, square: u8) -> Piece {
+    board.mailbox[square as usize].expect("tried to fetch empty piece")
 }
 
 pub fn get_side_bitboard(board: &Board, side: Side) -> Bitboard{
@@ -34,7 +17,7 @@ pub fn get_side_bitboard(board: &Board, side: Side) -> Bitboard{
 }
 
 pub fn from_fen(fen: &str) -> Board {
-    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], occupied: 0, moves: 0, en_passant_target: None, state: 0b10000 };
+    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], mailbox: [None; 64], occupied: 0, moves: 0, en_passant_target: None, state: 0b10000 };
 
     let parts: Vec<&str> = fen.split(' ').collect();
     let placements = parts[0];
@@ -57,6 +40,7 @@ pub fn from_fen(fen: &str) -> Board {
         let p_type = char_to_piece_type(&c);
         let square = (rank as u8) * 8 + file;
         board.bitboards[side as usize][p_type as usize].set(square);
+        board.mailbox[square as usize] = Some(Piece { piece_type: p_type, color: side });
         board.occupied |= 1 << (rank as u8 * 8 + file) as usize;
         file += 1;
     }
@@ -188,6 +172,7 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
                     captured_bit = ((old / 8) * 8) + (new - (new/8) * 8);
                     board.bitboards[captured_piece.color as usize][captured_piece.piece_type as usize].0 &= !(1 << ((old / 8) * 8) + (new - (new/8) * 8));
                     board.occupied &= !(1 << ((old / 8) * 8) + (new - (new/8) * 8));
+                    board.mailbox[captured_bit as usize] = None;
                 } 
             }
 
@@ -208,11 +193,15 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8 + 5;
                 board.occupied &= !(1 << row * 8 + 7);
                 board.occupied |= 1 << row * 8 + 5;
+                board.mailbox[(row * 8 + 7) as usize] = None;
+                board.mailbox[(row * 8 + 5) as usize] = Some(Piece { piece_type: PieceType::Rook, color: p.color });
             } else if delta == -2 {
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 0);
                 board.bitboards[p.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8 + 3;
                 board.occupied &= !(1 << row * 8 + 0);
                 board.occupied |= 1 << row * 8 + 3;
+                board.mailbox[(row * 8) as usize] = None;
+                board.mailbox[(row * 8 + 3) as usize] = Some(Piece { piece_type: PieceType::Rook, color: p.color });
             }
         } else if p.piece_type == PieceType::Rook {
             if p.color == Side::White {
@@ -252,6 +241,10 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
             board.occupied &= !(1 << captured_bit);
         }
         board.occupied |= 1 << new;
+
+        board.mailbox[old as usize] = None;
+        board.mailbox[new as usize] = Some(Piece { piece_type: p.piece_type, color: p.color });
+
         undo
     }else{
         panic!("CANNOT MOVE EMPTY SQUARE");
@@ -269,6 +262,9 @@ pub fn undo_move(board: &mut Board, undo: Undo){
     board.bitboards[undo.moving_piece_before.color as usize][current_piece.piece_type as usize].0 &= !(1 << undo.last_move.to);
     board.occupied |= 1 << undo.last_move.from;
     board.occupied &= !(1 << undo.last_move.to); 
+
+    board.mailbox[undo.last_move.from as usize] = Some(undo.moving_piece_before);
+    board.mailbox[undo.last_move.to as usize] = None;
     
     if undo.captured_piece == None{
         if undo.moving_piece_before.piece_type == PieceType::King {
@@ -280,11 +276,15 @@ pub fn undo_move(board: &mut Board, undo: Undo){
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 5);
                 board.occupied |= 1 << row * 8 + 7;
                 board.occupied &= !(1 << row * 8 + 5);
+                board.mailbox[(row * 8 + 7) as usize] = Some(Piece { piece_type: PieceType::Rook, color: undo.moving_piece_before.color });
+                board.mailbox[(row * 8 + 5) as usize] = None;
             } else if delta == -2 {
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 |= 1 << row * 8;
                 board.bitboards[undo.moving_piece_before.color as usize][PieceType::Rook as usize].0 &= !(1 << row * 8 + 3);
                 board.occupied |= 1 << row * 8;
                 board.occupied &= !(1 << row * 8 + 3);
+                board.mailbox[(row * 8) as usize] = Some(Piece { piece_type: PieceType::Rook, color: undo.moving_piece_before.color });
+                board.mailbox[(row * 8 + 3) as usize] = None;
             }
         }
     }else{
@@ -296,9 +296,11 @@ pub fn undo_move(board: &mut Board, undo: Undo){
             let delta_col = (undo.last_move.to % 8) as i16 - (undo.last_move.from % 8) as i16;
             board.bitboards[undo.captured_piece.unwrap().color as usize][undo.captured_piece.unwrap().piece_type as usize].0 |= 1 << (undo.last_move.from as i16 + delta_col) as u8;
             board.occupied |= 1 << (undo.last_move.from as i16 + delta_col) as u8;
+            board.mailbox[(undo.last_move.from as i16 + delta_col) as u8 as usize] = Some(undo.captured_piece.unwrap());
         } else {
             board.bitboards[undo.captured_piece.unwrap().color as usize][undo.captured_piece.unwrap().piece_type as usize].0 |= 1 << undo.last_move.to;
             board.occupied |= 1 << undo.last_move.to;
+            board.mailbox[undo.last_move.to as usize] = Some(undo.captured_piece.unwrap());
         }
     }
 }

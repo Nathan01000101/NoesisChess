@@ -63,6 +63,7 @@ pub struct Board{
     // 0 -> white   1 -> black
     // 0 -> king    1 -> queen  2 -> rook   3 -> bishop 4 -> knight 5 -> pawn
     pub bitboards: [[Bitboard; 6]; 2],
+    pub mailbox: [Option<Piece>; 64], // solely used so get_piece can be instant LU 
     pub occupied: u64,
     pub moves: u8,
     pub en_passant_target: Option<u8>,

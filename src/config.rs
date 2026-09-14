@@ -12,6 +12,7 @@ pub struct Config {
     pub white: String,
     pub black: String,
     pub headless: bool,
+    pub game_limit: usize
 }
 
 impl Config {
@@ -48,6 +49,12 @@ impl Config {
         .unwrap_or(&default_black)),
 
             headless: args.iter().any(|a| a == "--headless"),
+
+            game_limit: args.iter()
+        .position(|a| a == "--game_limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|d| d.parse::<usize>().ok())
+        .unwrap_or(usize::MAX)
         }
     }
 }

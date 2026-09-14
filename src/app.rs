@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::{process, thread};
 use std::time::Duration;
 
 use macroquad::prelude::*;
@@ -79,6 +79,7 @@ pub async fn run(config: Config) {
     let mut last_move: Option<(u8, u8)> = None;
 
     loop {
+        
         // restart
         if game_over {
             thread::sleep(Duration::from_secs_f32(5.0));
@@ -93,6 +94,10 @@ pub async fn run(config: Config) {
                 black_wins += 0.5;
             }
             println!("white wins: {}\nblack wins: {}", white_wins, black_wins);
+            if (white_wins + black_wins) as usize >= config.game_limit{
+                println!("Game Limit Reached");
+                process::exit(0);
+            }
             thinking = None;
             winner = None;
             last_move = None;

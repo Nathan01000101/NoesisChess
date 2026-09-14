@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::time::{Instant};
-use crate::types::{Board, PieceType, Piece, Side, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
+use crate::types::{Board, PieceType, Piece, Side, Undo, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
 use crate::board::{get_piece, make_move, undo_move, to_fen};
 use crate::movegen::{get_all_moves, get_all_captures, is_in_check};
 
@@ -14,6 +14,7 @@ use macroquad::{ prelude::*};
 use macroquad::miniquad::date;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
+const MAX_TABLE_SIZE: usize = 10_000_000;
 
 pub struct MinimaxAI {
     pub depth: usize, 
@@ -42,9 +43,9 @@ impl Player for MinimaxAI {
     fn get_move(&self, board: &Board, side: Side) -> (u8,u8) {
         let start = Instant::now();
 
-        println!("tt table is %{} full", self.tt.lock().unwrap().len()/800_000_000);
+        println!("tt table is %{:.2} full", (self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 100.0);
         // cap transposition table growth
-        if self.tt.lock().unwrap().len() > 800_000_000 {   
+        if self.tt.lock().unwrap().len() > MAX_TABLE_SIZE {   
             self.tt.lock().unwrap().clear();
         }
 
@@ -69,7 +70,9 @@ impl Player for MinimaxAI {
         let mut mh_guard = self.move_history.lock().unwrap();
 
         let mut b = board.clone();
+        let root_hash = self.zobrist.hash(board);
         let mut best_move: (u8, u8) = (64, 64);
+        let mut best_hash: u64 = 0;
 
         let mut best_eval: i32 = if side == Side::White {i32::MIN} else {i32::MAX};
 
@@ -84,9 +87,9 @@ impl Player for MinimaxAI {
         // move ordering
         // victim_value * 10 - attacker_value
         moves.data[..moves.len].sort_by_key(|mv| {
-            match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
+            match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
                 Some(victim) => {
-                    let attacker_val = match if is_piece(board, mv.0) {Some(get_piece(board, mv.0))} else {None} {
+                    let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
                         Some(a) => material_value(a.piece_type),
                         None => 0,
                     };
@@ -98,11 +101,12 @@ impl Player for MinimaxAI {
 
         for i in 0..moves.len{
             let undo = make_move(&mut b, moves.data[i].0,moves.data[i].1);
+            let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
             let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
-            let mut eval = minimax(&mut b, self.depth.saturating_sub((1 - bonus) as usize), 1,  alpha, beta, &self.zobrist, tt);
+            let mut eval = minimax(&mut b, child_hash, self.depth.saturating_sub((1 - bonus) as usize), 1,  alpha, beta, &self.zobrist, tt);
 
             // see if the move already exists in our move history
-            if mh_guard.contains(&self.zobrist.hash(&b)){
+            if mh_guard.contains(&child_hash){
                 if side == Side::White { eval -= MOVE_REPETITION_PENALTY} else { eval += MOVE_REPETITION_PENALTY}
                 print!("found a move that has already been made!");
             }
@@ -118,6 +122,7 @@ impl Player for MinimaxAI {
             if side == Side::White && eval > best_eval || side == Side::Black && eval < best_eval{
                 best_eval = eval;
                 best_move = moves.data[i];
+                best_hash = child_hash;
             }
              println!("{:?} side={:?} eval(post-penalty)={}", moves.data[i], side, eval); 
         }
@@ -126,7 +131,7 @@ impl Player for MinimaxAI {
 
         // add our move to our move history 
         make_move(&mut b, best_move.0, best_move.1);
-        mh_guard.push(self.zobrist.hash(&b));
+        mh_guard.push(best_hash);
 
         best_move
     }
@@ -136,13 +141,12 @@ impl Player for MinimaxAI {
     }
 }
 
-fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
+fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
         ztable: &ZobristTable,
         tt: &mut FxHashMap<u64, TTEntry>) -> i32 {
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let alpha_orig = alpha;
     let beta_orig = beta;
-    let hash = ztable.hash(board);
     // Only trust an entry searched at least as deep as we need.
     if let Some(entry) = tt.get(&hash) {
         if entry.depth >= depth {
@@ -166,9 +170,9 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
     // move ordering
     // victim value * 10 - attacker value
     moves.data[..moves.len].sort_by_key(|mv| {
-        match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
+        match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
             Some(victim) => {
-                let attacker_val = match if is_piece(board, mv.0) {Some(get_piece(board, mv.0))} else {None} {
+                let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
                     Some(a) => material_value(a.piece_type),
                     None => 0,
                 };
@@ -193,7 +197,8 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
         let mut eval = i32::MIN;
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            eval = minimax(board, depth -1, ply + 1, alpha, beta, ztable, tt).max(eval);
+            let child_hash = ztable.update_hash(hash, board, &undo);
+            eval = minimax(board, child_hash, depth -1, ply + 1, alpha, beta, ztable, tt).max(eval);
             undo_move(board, undo);
 
             alpha = alpha.max(eval);
@@ -204,7 +209,8 @@ fn minimax(board: &mut Board, depth: usize, ply: i32, mut alpha: i32, mut beta: 
         let mut eval = i32::MAX;
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            eval = minimax(board, depth - 1, ply + 1, alpha, beta, ztable, tt).min(eval);
+            let child_hash = ztable.update_hash(hash, board, &undo);
+            eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt).min(eval);
             undo_move(board, undo);
 
             beta = beta.min(eval);
@@ -266,7 +272,7 @@ fn quiescence(
     }
 
     // MVV-style ordering: capture biggest victim first
-    moves.data[..moves.len].sort_by_key(|mv| match if is_piece(board, mv.1) {Some(get_piece(board, mv.1))} else {None} {
+    moves.data[..moves.len].sort_by_key(|mv| match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
         Some(p) => -piece_value(p, mv.1, board.moves),
         None => 0,
     });
@@ -447,7 +453,7 @@ impl ZobristTable {
     fn hash(&self, board: &Board) -> u64 {
         let mut h: u64 = 0;
         for sq in 0..64 {
-            if is_piece(&board, sq) {
+            if board.is_piece(sq) {
                 let p = get_piece(&board, sq);
                 h ^= self.pieces[p.piece_type as usize][p.color as usize][sq as usize];
             }
@@ -462,6 +468,66 @@ impl ZobristTable {
         if board.state & WHITE_LONG != 0 { h ^= self.castling[1]; }
         if board.state & BLACK_SHORT != 0 { h ^= self.castling[2]; }
         if board.state & BLACK_LONG != 0 { h ^= self.castling[3]; }
+
+        h
+    }
+
+    fn update_hash(&self, hash: u64, board: &Board, undo: &Undo) -> u64 {
+        let mut h = hash;
+        let from = undo.last_move.from;
+        let to = undo.last_move.to;
+        let moved = undo.moving_piece_before;
+        let side = moved.color;
+
+        h ^= self.pieces[moved.piece_type as usize][side as usize][from as usize];
+
+        if let Some(captured) = undo.captured_piece {
+            let is_en_passant = moved.piece_type == PieceType::Pawn
+                && undo.previous_en_passant_target == Some(to)
+                && to % 8 != from % 8;
+
+            let captured_sq = if is_en_passant {
+                let delta_col = (to % 8) as i16 - (from % 8) as i16;
+                (from as i16 + delta_col) as u8
+            } else {
+                to
+            };
+            h ^= self.pieces[captured.piece_type as usize][captured.color as usize][captured_sq as usize];
+        }
+
+        let final_type = if moved.piece_type == PieceType::Pawn && (to < 8 || to > 55) {
+            PieceType::Queen
+        } else {
+            moved.piece_type
+        };
+        h ^= self.pieces[final_type as usize][side as usize][to as usize];
+
+        if moved.piece_type == PieceType::King {
+            let delta = to as i32 - from as i32;
+            let row = to / 8;
+            if delta == 2 {
+                h ^= self.pieces[PieceType::Rook as usize][side as usize][(row * 8 + 7) as usize];
+                h ^= self.pieces[PieceType::Rook as usize][side as usize][(row * 8 + 5) as usize];
+            } else if delta == -2 {
+                h ^= self.pieces[PieceType::Rook as usize][side as usize][(row * 8) as usize];
+                h ^= self.pieces[PieceType::Rook as usize][side as usize][(row * 8 + 3) as usize];
+            }
+        }
+
+        h ^= self.black_to_move;
+
+        if let Some(prev_ep) = undo.previous_en_passant_target {
+            h ^= self.en_passant_file[(prev_ep % 8) as usize];
+        }
+        if let Some(new_ep) = board.en_passant_target {
+            h ^= self.en_passant_file[(new_ep % 8) as usize];
+        }
+
+        let (prev, cur) = (undo.previous_state, board.state);
+        if (prev & WHITE_SHORT) != (cur & WHITE_SHORT) { h ^= self.castling[0]; }
+        if (prev & WHITE_LONG)  != (cur & WHITE_LONG)  { h ^= self.castling[1]; }
+        if (prev & BLACK_SHORT) != (cur & BLACK_SHORT) { h ^= self.castling[2]; }
+        if (prev & BLACK_LONG)  != (cur & BLACK_LONG)  { h ^= self.castling[3]; }
 
         h
     }

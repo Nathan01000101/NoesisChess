@@ -204,7 +204,7 @@ pub fn get_valid_moves(board: &mut Board, square: u8, currently_in_check: bool, 
 
         let row = square / 8;
         if can_long{
-            if !is_piece(board, row * 8 + 1) && !is_piece(board, row * 8 + 2) && !is_piece(board, row * 8 + 3) {
+            if !board.is_piece(row * 8 + 1) && !board.is_piece(row * 8 + 2) && !board.is_piece(row * 8 + 3) {
                 if 
                     !is_square_attacked(&board, row * 8 + 2 , opposite_side) 
                     && !is_square_attacked(&board, row * 8 + 3, opposite_side) {
@@ -217,7 +217,7 @@ pub fn get_valid_moves(board: &mut Board, square: u8, currently_in_check: bool, 
 
         // kingside
         if can_short {
-            if !is_piece(board, row * 8 + 6) && !is_piece(board, row * 8 + 5) {
+            if !board.is_piece(row * 8 + 6) && !board.is_piece(row * 8 + 5) {
                 if !is_square_attacked(&board, row * 8 + 6, opposite_side) 
                     && !is_square_attacked(&board, row * 8 + 5, opposite_side) {
                     if !currently_in_check {
@@ -302,7 +302,7 @@ pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
             && pseudo.data[i] % 8 != square % 8
             && if board.en_passant_target.is_some() {board.en_passant_target.unwrap() == pseudo.data[i]} else {false};
 
-        let is_capture = is_piece(board, pseudo.data[i]) || is_en_passant;
+        let is_capture = board.is_piece(pseudo.data[i]) || is_en_passant;
         if !is_capture { continue; }
 
         let needs_full_check = piece_is_king
