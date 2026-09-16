@@ -83,7 +83,8 @@ pub struct Board{
     pub occupied: u64,
     pub moves: u8,
     pub en_passant_target: Option<u8>,
-    pub state: u8 
+    pub state: u8,
+    pub half_moves: u16 // used for 50 move rule; is reset after a capture or pawn move
     // 5th bit -> white to move,  4th bit -> black long castle right, 3rd -> black short castle right
     // 2nd bit -> white long castle right, 1st bit -> white short castle right
 }

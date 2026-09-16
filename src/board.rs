@@ -17,7 +17,7 @@ pub fn get_side_bitboard(board: &Board, side: Side) -> Bitboard{
 }
 
 pub fn from_fen(fen: &str) -> Board {
-    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], mailbox: [None; 64], occupied: 0, moves: 0, en_passant_target: None, state: 0b10000 };
+    let mut board = Board { bitboards: [[Bitboard::EMPTY; 6]; 2], mailbox: [None; 64], occupied: 0, moves: 0, en_passant_target: None, state: 0b10000, half_moves: 1 };
 
     let parts: Vec<&str> = fen.split(' ').collect();
     let placements = parts[0];
@@ -64,6 +64,8 @@ pub fn from_fen(fen: &str) -> Board {
         let ep_rank = chars.next().unwrap().to_digit(10).unwrap() as u8 - 1; // no flip needed under LERF
         board.en_passant_target = Some(ep_rank * 8 + ep_file);
     }
+
+    let halfmove = parts[4].parse::<u16>().unwrap();
 
     let fullmove = parts[5].parse::<u8>().unwrap();
     let ply_offset = if turn.starts_with('b') { 1 } else { 0 };
@@ -115,7 +117,7 @@ pub fn to_fen(board: &Board) -> String {
         }
     }
 
-    write!(s, " 0 {}", board.moves / 2 + 1).unwrap();
+    write!(s, " {} {}", board.half_moves, board.moves).unwrap();
     s
 }
 
@@ -156,7 +158,10 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
         
         // remove en passant target
         board.en_passant_target = None;
-        board.moves += 1;
+
+        if board.state & WHITE_TO_MOVE == 0{
+            board.moves += 1;
+        }
         board.state ^= WHITE_TO_MOVE;
         if p.piece_type == PieceType::Pawn{
             
@@ -254,7 +259,10 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
 
 pub fn undo_move(board: &mut Board, undo: Undo){
     board.state = undo.previous_state;
-    board.moves -= 1;
+    if board.state & WHITE_TO_MOVE != 0{
+        board.moves -= 1;
+    }
+    
     board.en_passant_target = undo.previous_en_passant_target;
     let current_piece = get_piece(board, undo.last_move.to);
 

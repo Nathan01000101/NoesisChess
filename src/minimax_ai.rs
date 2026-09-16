@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
-use std::time::{Instant};
+use std::time::{Instant, Duration};
 use crate::types::{Board, PieceType, Piece, Side, Undo, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
 use crate::board::{get_piece, make_move, undo_move, to_fen};
 use crate::movegen::{get_all_moves, get_all_captures, is_in_check};
@@ -15,6 +15,7 @@ use macroquad::miniquad::date;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
 const MAX_TABLE_SIZE: usize = 10_000_000;
+const NODES_PER_TIME_CHECK: u64 = 0x7FF; // check clock every 2048 nodes
 
 pub struct MinimaxAI {
     pub depth: usize, 
@@ -42,11 +43,12 @@ impl Player for MinimaxAI {
     fn get_move(&self, board: &Board, side: Side, time_remaining: std::time::Duration, increment: std::time::Duration) -> (u8,u8) {
         let start = Instant::now();
         let time_budget = compute_time_budget(time_remaining.as_millis(), increment.as_millis(), board.moves);
-        println!("tt table is %{:.2} full", (self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 100.0);
+        
         // cap transposition table growth
         if self.tt.lock().unwrap().len() > MAX_TABLE_SIZE {   
             self.tt.lock().unwrap().clear();
         }
+        println!("info hashfull {}", ((self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 1000.0) as i32 );
 
         // before calculating move manually, check if position exists in our opening book
         let full_fen: String = to_fen(board);
@@ -57,7 +59,6 @@ impl Player for MinimaxAI {
             if let Some(mvs) = possible{
                 if mvs.len() > 0{
                     let mv = mvs.get(rand::gen_range(0, mvs.len())).unwrap();
-                    println!("minimax AI found book move");
                     return (mv.0, mv.1);
                 }
             }
@@ -70,21 +71,13 @@ impl Player for MinimaxAI {
 
         let mut b = board.clone();
         let root_hash = self.zobrist.hash(board);
-        let mut best_move: (u8, u8) = (64, 64);
-        let mut best_hash: u64 = 0;
-
-        let mut best_eval: i32 = if side == Side::White {i32::MIN} else {i32::MAX};
-
-        let mut alpha = i32::MIN;
-        let mut beta = i32::MAX;
 
         rand::srand(date::now() as u64);
-        let mut moves = MoveListBuf::new() ;
+        let mut moves = MoveListBuf::new();
         get_all_moves(&mut b, side, &mut moves);
-        println!("root move count: {}", moves.len);
 
         // move ordering
-        // victim_value * 10 - attacker_value
+        // victim_value * 10 + (6 - attacker_value)
         moves.data[..moves.len].sort_by_key(|mv| {
             match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
                 Some(victim) => {
@@ -92,41 +85,70 @@ impl Player for MinimaxAI {
                         Some(a) => material_value(a.piece_type),
                         None => 0,
                     };
-                    -(material_value(victim.piece_type) * 10 - attacker_val)
+                    -(material_value(victim.piece_type) * 10  + (6 - attacker_val))
                 }
                 None => 0,
             }
         });
 
-        for i in 0..moves.len{
-            let undo = make_move(&mut b, moves.data[i].0,moves.data[i].1);
-            let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
-            let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
-            let mut eval = minimax(&mut b, child_hash, self.depth.saturating_sub((1 - bonus) as usize), 1,  alpha, beta, &self.zobrist, tt);
+        // fallback in case even depth 1 somehow can't finish
+        let mut best_move: (u8, u8) = moves.data[0];
+        let mut best_hash: u64 = 0;
 
-            // see if the move already exists in our move history
-            if mh_guard.contains(&child_hash){
-                if side == Side::White { eval -= MOVE_REPETITION_PENALTY} else { eval += MOVE_REPETITION_PENALTY}
-                print!("found a move that has already been made!");
+        let mut control = SearchControl::new(start, time_budget);
+        let mut current_depth: usize = 1;
+
+        loop {
+            let mut depth_best_move = best_move;
+            let mut depth_best_hash = best_hash;
+            let mut depth_best_eval: i32 = if side == Side::White { i32::MIN } else { i32::MAX };
+
+            let mut alpha = i32::MIN;
+            let mut beta = i32::MAX;
+            let mut depth_completed = true;
+
+            for i in 0..moves.len {
+                let undo = make_move(&mut b, moves.data[i].0, moves.data[i].1);
+                let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
+                let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
+                let mut eval = minimax(&mut b, child_hash, current_depth.saturating_sub((1 - bonus) as usize), 1, alpha, beta, &self.zobrist, tt, &mut control);
+                undo_move(&mut b, undo);
+
+                if control.aborted {
+                    depth_completed = false;
+                    break;
+                }
+
+                if mh_guard.contains(&child_hash){
+                    if side == Side::White { eval -= MOVE_REPETITION_PENALTY } else { eval += MOVE_REPETITION_PENALTY }
+                }
+
+                if side == Side::White { alpha = alpha.max(eval); } else { beta = beta.min(eval); }
+
+                if side == Side::White && eval > depth_best_eval || side == Side::Black && eval < depth_best_eval {
+                    depth_best_eval = eval;
+                    depth_best_move = moves.data[i];
+                    depth_best_hash = child_hash;
+                }
             }
 
-            // alpha - beta pruning
-            if side == Side::White {
-                alpha = alpha.max(eval);
+            if depth_completed {
+                best_move = depth_best_move;
+                best_hash = depth_best_hash;
+                println!("depth {} done: {:?} eval={} ({}ms elapsed)", current_depth, best_move, depth_best_eval, start.elapsed().as_millis());
             } else {
-                beta = beta.min(eval);
+                println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
+                break;
             }
-        
-            undo_move(&mut b, undo);
-            if side == Side::White && eval > best_eval || side == Side::Black && eval < best_eval{
-                best_eval = eval;
-                best_move = moves.data[i];
-                best_hash = child_hash;
+
+            current_depth += 1;
+            if current_depth > self.depth {
+                break; // safety cap
             }
-             println!("{:?} side={:?} eval(post-penalty)={}", moves.data[i], side, eval); 
         }
-        println!("CHOSE {:?} best_eval={}", best_move, best_eval);
-        println!("single-threaded minimax took {}ms to think", start.elapsed().as_millis());
+
+        println!("CHOSE {:?}", best_move);
+        println!("thinking took {}ms", start.elapsed().as_millis());
 
         // add our move to our move history 
         make_move(&mut b, best_move.0, best_move.1);
@@ -140,9 +162,44 @@ impl Player for MinimaxAI {
     }
 }
 
+struct SearchControl {
+    start: Instant,
+    budget: Duration,
+    nodes: u64,
+    aborted: bool,
+}
+
+impl SearchControl {
+    fn new(start: Instant, budget_ms: u128) -> Self {
+        Self {
+            start,
+            budget: Duration::from_millis(budget_ms as u64),
+            nodes: 0,
+            aborted: false,
+        }
+    }
+
+    // returns true once the deadline is hit; cheap on most calls since it
+    // only actually checks the clock every NODES_PER_TIME_CHECK nodes
+    #[inline]
+    fn poll(&mut self) -> bool {
+        if self.aborted { return true; }
+        self.nodes += 1;
+        if self.nodes & NODES_PER_TIME_CHECK == 0 && self.start.elapsed() >= self.budget {
+            self.aborted = true;
+        }
+        self.aborted
+    }
+}
+
 fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
         ztable: &ZobristTable,
-        tt: &mut FxHashMap<u64, TTEntry>) -> i32 {
+        tt: &mut FxHashMap<u64, TTEntry>,
+        control: &mut SearchControl) -> i32 {
+    if control.poll() {
+        return 0; // discarded by caller once it sees control.aborted
+    }
+
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let alpha_orig = alpha;
     let beta_orig = beta;
@@ -159,7 +216,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     } 
 
     if depth == 0 {
-        return quiescence(board, ply, alpha, beta, ztable, tt);
+        return quiescence(board, ply, alpha, beta, ztable, tt, control);
     }
 
     let mut moves = MoveListBuf::new();
@@ -167,7 +224,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     
 
     // move ordering
-    // victim value * 10 - attacker value
+    // victim value * 10 + (6 - attacker value) 
     moves.data[..moves.len].sort_by_key(|mv| {
         match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
             Some(victim) => {
@@ -175,7 +232,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
                     Some(a) => material_value(a.piece_type),
                     None => 0,
                 };
-                -(material_value(victim.piece_type) * 10 - attacker_val)
+                -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
             }
             None => 0,
         }
@@ -197,9 +254,11 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
-            eval = minimax(board, child_hash, depth -1, ply + 1, alpha, beta, ztable, tt).max(eval);
+            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
+            if control.aborted { return 0; }
 
+            eval = child_eval.max(eval);
             alpha = alpha.max(eval);
             if alpha >= beta { break; }
         }
@@ -209,9 +268,11 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
-            eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt).min(eval);
+            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
+            if control.aborted { return 0; }
 
+            eval = child_eval.min(eval);
             beta = beta.min(eval);
             if beta <= alpha { break; }
         }
@@ -232,7 +293,12 @@ fn quiescence(
     mut beta: i32,
     ztable: &ZobristTable,
     tt: &mut FxHashMap<u64, TTEntry>,
+    control: &mut SearchControl,
 ) -> i32 {
+    if control.poll() {
+        return 0;
+    }
+
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let in_check = is_in_check(board, side);
 
@@ -270,17 +336,28 @@ fn quiescence(
         return stand_pat; // quiet position, no captures to consider
     }
 
-    // MVV-style ordering: capture biggest victim first
-    moves.data[..moves.len].sort_by_key(|mv| match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
-        Some(p) => -piece_value(p, mv.1, board.moves),
-        None => 0,
+    // move ordering
+    // victim_value * 10 + (6 - attacker_value)
+    moves.data[..moves.len].sort_by_key(|mv| {
+        match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
+            Some(victim) => {
+                let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
+                    Some(a) => material_value(a.piece_type),
+                    None => 0,
+                };
+                -(material_value(victim.piece_type) * 10  + (6 - attacker_val))
+            }
+            None => 0,
+        }
     });
 
     if side == Side::White {
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt);
+            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
+            if control.aborted { return alpha; }
+
             if score >= beta { return beta; }
             if score > alpha { alpha = score; }
         }
@@ -288,8 +365,10 @@ fn quiescence(
     } else {
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt);
+            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
+            if control.aborted { return beta; }
+
             if score <= alpha { return alpha; }
             if score < beta { beta = score; }
         }
@@ -346,20 +425,20 @@ fn compute_time_budget(time_left_ms: u128, increment_ms: u128, moves_played: u8)
 fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{
     if piece.color == Side::White{
         match piece.piece_type {
-            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[63 - coord as usize]}          else {return 100 + PAWN_TABLE_LATE[63 - coord as usize]},
+            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[63 - coord as usize]}          else {return 105 + PAWN_TABLE_LATE[63 - coord as usize]},
             PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[63 - coord as usize]}        else {return 275 + KNIGHT_TABLE[63 - coord as usize]},
             PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[63 - coord as usize] }      else {return 350 + BISHOP_TABLE_LATE[63 - coord as usize]},
             PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[63 - coord as usize]}          else {return 570 + ROOK_TABLE_LATE[63 - coord as usize]},
-            PieceType::Queen  => if moves < 16 {return 950 + QUEEN_TABLE_EARLY[63 - coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[ 63 - coord as usize]},
+            PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[63 - coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[ 63 - coord as usize]},
             PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[63 - coord as usize]} else {return 100000 + KING_TABLE_LATE[63 - coord as usize] },
         };
     }else{
         match piece.piece_type {
-            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[coord as usize]}          else {return 100 + PAWN_TABLE_LATE[coord as usize]},
+            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[coord as usize]}          else {return 105 + PAWN_TABLE_LATE[coord as usize]},
             PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[coord as usize]}        else {return 250 + KNIGHT_TABLE[coord as usize]},
             PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[coord as usize] }      else {return 350 + BISHOP_TABLE_LATE[coord as usize]},
             PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[coord as usize]}          else {return 570 + ROOK_TABLE_LATE[coord as usize]},
-            PieceType::Queen  => if moves < 16 {return 950 + QUEEN_TABLE_EARLY[coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[coord as usize]},
+            PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[coord as usize]},
             PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[coord as usize]} else {return 100000 + KING_TABLE_LATE[coord as usize] },
         };
     }

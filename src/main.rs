@@ -14,7 +14,7 @@ mod types;
 
 
 const WINDOW_SIZE: f32 = 600.0;
-pub const FALLBACK_DEPTH: usize = 5;
+pub const FALLBACK_DEPTH: usize = 10;
 
 fn main() {
 println!(r#" Thank you for using
@@ -28,7 +28,7 @@ println!("\n Engine built by: Nathan E.");
 println!("  Version 0.29-dev 2026-09-14");
     let config = config::Config::from_args();
 
-    if config.headless {
+    if !config.gui {
         app::run_headless(config);
     } else {
         macroquad::Window::from_config(window_conf(), app::run(config));

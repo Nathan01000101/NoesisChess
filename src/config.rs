@@ -11,7 +11,7 @@ pub struct Config {
     pub fen: String,
     pub white: String,
     pub black: String,
-    pub headless: bool,
+    pub gui: bool,
     pub game_limit: usize
 }
 
@@ -48,7 +48,7 @@ impl Config {
         .map(String::as_str)
         .unwrap_or(&default_black)),
 
-            headless: args.iter().any(|a| a == "--headless"),
+            gui: args.iter().any(|a| a == "--gui"),
 
             game_limit: args.iter()
         .position(|a| a == "--game_limit")
