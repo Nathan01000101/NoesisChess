@@ -73,6 +73,8 @@ impl Player for MinimaxAI {
         let mut b = board.clone();
         let root_hash = self.zobrist.hash(board);
 
+        let mut killers = [[(0,0); 2]; 64];
+
         rand::srand(date::now() as u64);
         let mut moves = MoveListBuf::new();
         get_all_moves(&mut b, side, &mut moves);
@@ -80,7 +82,7 @@ impl Player for MinimaxAI {
         // move value ordering + TT ordering
         // victim value * 10 + (6 - attacker value) 
         let tt_move = tt.get(&root_hash).and_then(|entry| Some(entry.best_move));
-        moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
+        moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(board, mv, tt_move));
 
         // fallback in case even depth 1 somehow can't finish
         let mut best_move: (u8, u8) = moves.data[0];
@@ -102,7 +104,7 @@ impl Player for MinimaxAI {
                 let undo = make_move(&mut b, moves.data[i].0, moves.data[i].1);
                 let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
                 let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
-                let mut eval = minimax(&mut b, child_hash, current_depth.saturating_sub((1 - bonus) as usize), 1, alpha, beta, &self.zobrist, tt, &mut control);
+                let mut eval = minimax(&mut b, child_hash, current_depth.saturating_sub((1 - bonus) as usize), 1, alpha, beta, &self.zobrist, tt, &mut killers, &mut control);
                 println!("info nodes {}", control.nodes);
                 undo_move(&mut b, undo);
 
@@ -192,6 +194,7 @@ impl SearchControl {
 fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
         ztable: &ZobristTable,
         tt: &mut FxHashMap<u64, TTEntry>,
+        killers: &mut [[(u8, u8); 2]; 64],
         control: &mut SearchControl) -> i32 {
     if control.poll() {
         return 0; // discarded by caller once it sees control.aborted
@@ -226,7 +229,9 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     // move value ordering + TT ordering
     // victim value * 10 + (6 - attacker value) 
     let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
-    moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
+    let p = ply as usize;
+    let this_ply_killers = if p < killers.len() { killers[p] } else { [(0,0); 2] };
+    moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt_killer(board, mv, tt_move, this_ply_killers));
 
     // mate check
     if moves.len == 0 {
@@ -244,7 +249,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
-            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);
+            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, killers, control);
             undo_move(board, undo);
             if control.aborted { return 0; }
 
@@ -253,7 +258,18 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
                 eval = child_eval;
             }
             alpha = alpha.max(eval);
-            if alpha >= beta { break; }
+            if alpha >= beta {
+                let mv = moves.data[i];
+                let is_capture = board.is_piece(mv.1); // checked pre-move state, i.e. right now
+                if !is_capture {
+                    let p = ply as usize;
+                    if p < killers.len() && killers[p][0] != moves.data[i] {
+                        killers[p][1] = killers[p][0];
+                        killers[p][0] = moves.data[i];
+                    }
+                }
+                break;
+            }
         }
         eval
     } else {
@@ -261,7 +277,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
-            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);
+            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, killers, control);
             undo_move(board, undo);
             if control.aborted { return 0; }
 
@@ -270,7 +286,19 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
                 eval = child_eval;
             }
             beta = beta.min(eval);
-            if beta <= alpha { break; }
+            if beta <= alpha {
+                let mv = moves.data[i];
+                let is_capture = board.is_piece(mv.1); // checked pre-move state, i.e. right now
+                if !is_capture {
+                    let p = ply as usize;
+                    if p < killers.len() && killers[p][0] != mv {
+                        killers[p][1] = killers[p][0];
+                        killers[p][0] = mv;
+                    }
+                }
+                
+                break;
+            }
         }
         eval
     };
@@ -343,7 +371,7 @@ fn quiescence(
     // move value ordering + TT ordering
     // victim value * 10 + (6 - attacker value) 
     let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
-    moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
+    moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(board, mv, tt_move));
 
     // maxxing
     if side == Side::White {
@@ -392,7 +420,7 @@ pub fn evaluate(board: &Board) -> i32 {
     score
 }
 
-fn move_order_score(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
+fn mvv_lva_tt(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
     if tt_move == Some(*mv) {
         return i32::MIN;
     }
@@ -407,6 +435,29 @@ fn move_order_score(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i3
         }
         None => {
             0
+        }
+    }
+}
+
+fn mvv_lva_tt_killer(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>, killers: [(u8,u8); 2]) -> i32 {
+    if tt_move == Some(*mv) {
+        return i32::MIN;
+    }
+
+    match if board.is_piece(mv.1) { Some(get_piece(board, mv.1)) } else { None } {
+        Some(victim) => {
+            let attacker_val = match if board.is_piece(mv.0) { Some(get_piece(board, mv.0)) } else { None } {
+                Some(a) => material_value(a.piece_type),
+                None => 0,
+            };
+            -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
+        }
+        None => {
+            if killers.contains(mv){
+                -1
+            }else{
+                0
+            }
         }
     }
 }
