@@ -14,15 +14,25 @@ use macroquad::{ prelude::*};
 use macroquad::miniquad::date;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
-const MAX_TABLE_SIZE: usize = 10_000_000;
+const MAX_TABLE_SIZE_BYTES: usize = 1_073_741_824; // 1gb
 const NODES_PER_TIME_CHECK: u64 = 0x7FF; // check clock every 2048 nodes
 
+// Search bounds. INFINITY must be safely negatable (unlike i32::MIN) and must
+// sit above any real mate score.
+const INFINITY: i32 = 1_000_000;
+const MATE: i32 = 500_000;
+const MATE_THRESHOLD: i32 = MATE - 1_000; // |score| above this means "this is a mate score"
+
+// Null move pruning knobs.
+const NULL_MIN_DEPTH: i32 = 3;
+const NULL_BASE_REDUCTION: i32 = 2;
+
 pub struct MinimaxAI {
-    pub depth: usize, 
+    pub depth: usize,
     opening_book: FxHashMap<String, Vec<(u8, u8)>>,
     zobrist: ZobristTable,
     tt: Mutex<FxHashMap<u64, TTEntry>>,
-    pub move_history: Mutex<Vec<u64>>    
+    pub move_history: Mutex<Vec<u64>>
     }
 
 impl MinimaxAI {
@@ -34,34 +44,35 @@ impl MinimaxAI {
             zobrist: ZobristTable::new(),
             tt: Mutex::new(FxHashMap::default()),
             move_history: Mutex::new(Vec::new())
-            
+
         }
     }
 }
+
 impl Player for MinimaxAI {
     fn as_any(&self) -> &dyn Any { self }
+
     fn get_move(&self, board: &Board, side: Side, time_remaining: std::time::Duration, increment: std::time::Duration) -> (u8,u8) {
         let start = Instant::now();
         let time_budget = compute_time_budget(time_remaining.as_millis(), increment.as_millis(), board.moves);
-        
+
         // cap transposition table growth
-        if self.tt.lock().unwrap().len() > MAX_TABLE_SIZE {   
-            self.tt.lock().unwrap().clear();
+        let mut tt_unlock = self.tt.lock().unwrap();
+        if tt_unlock.len() * size_of::<TTEntry>() > MAX_TABLE_SIZE_BYTES {
+            tt_unlock.clear();
         }
-        println!("info hashfull {}", ((self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 1000.0) as i32 );
-        
+
+        println!("info hashfull {}", ((tt_unlock.len() as f32 * size_of::<TTEntry>() as f32 / MAX_TABLE_SIZE_BYTES as f32) * 1000.0) as i32);
+        drop(tt_unlock);
 
         // before calculating move manually, check if position exists in our opening book
         let full_fen: String = to_fen(board);
         let parts: Vec<&str> = full_fen.split_whitespace().collect();
         let fen = parts[..4].join(" ");
-        if self.opening_book.contains_key(&fen){
-            let possible = self.opening_book.get(&fen);
-            if let Some(mvs) = possible{
-                if mvs.len() > 0{
-                    let mv = mvs.get(rand::gen_range(0, mvs.len())).unwrap();
-                    return (mv.0, mv.1);
-                }
+        if let Some(mvs) = self.opening_book.get(&fen){
+            if mvs.len() > 0{
+                let mv = mvs.get(rand::gen_range(0, mvs.len())).unwrap();
+                return (mv.0, mv.1);
             }
         }
 
@@ -73,39 +84,53 @@ impl Player for MinimaxAI {
         let mut b = board.clone();
         let root_hash = self.zobrist.hash(board);
 
-        let mut killers = [[(0,0); 2]; 64];
+        let mut killers = [[(0u8,0u8); 2]; 64];
 
         rand::srand(date::now() as u64);
         let mut moves = MoveListBuf::new();
         get_all_moves(&mut b, side, &mut moves);
 
-        // move value ordering + TT ordering
-        // victim value * 10 + (6 - attacker value) 
-        let tt_move = tt.get(&root_hash).and_then(|entry| Some(entry.best_move));
+        if moves.len == 0 {
+            // mated or stalemated at the root; caller should've have asked for move
+            return (0, 0);
+        }
+
+        // initial root ordering, TT move -> MVV-LVA
+        let tt_move = tt.get(&root_hash).map(|entry| entry.best_move);
         moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(board, mv, tt_move));
 
-        // fallback in case even depth 1 somehow can't finish
-        let mut best_move: (u8, u8) = moves.data[0];
+        let mut root_moves: Vec<(u8, u8)> = (0..moves.len).map(|i| moves.data[i]).collect();
+        let mut root_scores: Vec<i32> = vec![-INFINITY; root_moves.len()];
+
+        let mut best_move: (u8, u8) = root_moves[0];
         let mut best_hash: u64 = 0;
 
         let mut control = SearchControl::new(start, time_budget);
-        let mut current_depth: usize = 1;
+        let mut current_depth: i32 = 1;
 
         loop {
+            let mut iter_scores: Vec<i32> = vec![-INFINITY; root_moves.len()];
             let mut depth_best_move = best_move;
             let mut depth_best_hash = best_hash;
-            let mut depth_best_eval: i32 = if side == Side::White { i32::MIN } else { i32::MAX };
+            let mut depth_best_score = -INFINITY;
 
-            let mut alpha = i32::MIN;
-            let mut beta = i32::MAX;
+            let mut alpha = -INFINITY;
+            let beta = INFINITY;
             let mut depth_completed = true;
 
-            for i in 0..moves.len {
-                let undo = make_move(&mut b, moves.data[i].0, moves.data[i].1);
+            for i in 0..root_moves.len() {
+                let mv = root_moves[i];
+                let undo = make_move(&mut b, mv.0, mv.1);
                 let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
-                let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
-                let mut eval = minimax(&mut b, child_hash, current_depth.saturating_sub((1 - bonus) as usize), 1, alpha, beta, &self.zobrist, tt, &mut killers, &mut control);
-                println!("info nodes {}", control.nodes);
+
+                // the child is searched from the opposing point of
+                // view, so flip the window and negate what comes back.
+                let mut score = -negamax(
+                    &mut b, child_hash, current_depth - 1, 1,
+                    -beta, -alpha, true,
+                    &self.zobrist, tt, &mut killers, &mut control,
+                );
+
                 undo_move(&mut b, undo);
 
                 if control.aborted {
@@ -113,38 +138,59 @@ impl Player for MinimaxAI {
                     break;
                 }
 
-                if mh_guard.contains(&child_hash){
-                    if side == Side::White { eval -= MOVE_REPETITION_PENALTY } else { eval += MOVE_REPETITION_PENALTY }
+                // Repetition penalty is now unconditional: at the root, higher
+                // is always better for the side to move.
+                if mh_guard.contains(&child_hash) {
+                    score -= MOVE_REPETITION_PENALTY;
                 }
 
-                if side == Side::White { alpha = alpha.max(eval); } else { beta = beta.min(eval); }
+                iter_scores[i] = score;
 
-                if side == Side::White && eval > depth_best_eval || side == Side::Black && eval < depth_best_eval {
-                    depth_best_eval = eval;
-                    depth_best_move = moves.data[i];
+                if score > depth_best_score {
+                    depth_best_score = score;
+                    depth_best_move = mv;
                     depth_best_hash = child_hash;
                 }
+                if score > alpha { alpha = score; }
             }
 
             if depth_completed {
                 best_move = depth_best_move;
                 best_hash = depth_best_hash;
-                println!("depth {} done: {:?} eval={} ({}ms elapsed)", current_depth, best_move, depth_best_eval, start.elapsed().as_millis());
+                root_scores = iter_scores;
+
+                // reorder root moves best-first for the next iteration
+                let mut paired: Vec<((u8, u8), i32)> = root_moves
+                    .iter()
+                    .cloned()
+                    .zip(root_scores.iter().cloned())
+                    .collect();
+                paired.sort_by(|a, b| b.1.cmp(&a.1));
+                root_moves = paired.iter().map(|p| p.0).collect();
+                root_scores = paired.iter().map(|p| p.1).collect();
+
+                // UCI info
+                println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), depth_best_score, control.nodes, control.nodes as f32 / start.elapsed().as_secs_f32());
             } else {
                 println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
                 break;
             }
 
             current_depth += 1;
-            if current_depth > self.depth {
+            if current_depth > self.depth as i32 {
                 break; // dont exceed max depth
+            }
+
+            // do not start next iter if we dont have time.
+            if start.elapsed().as_millis() * 2 >= time_budget {
+                break;
             }
         }
 
         println!("CHOSE {:?}", best_move);
         println!("thinking took {}ms", start.elapsed().as_millis());
 
-        // add our move to our move history 
+        // add our move to our move history
         make_move(&mut b, best_move.0, best_move.1);
         mh_guard.push(best_hash);
 
@@ -173,7 +219,6 @@ impl SearchControl {
         }
     }
 
-    // returns true once the deadline is hit; cheap on most calls since it
     // only actually checks the clock every NODES_PER_TIME_CHECK nodes
     #[inline]
     fn poll(&mut self) -> bool {
@@ -186,145 +231,183 @@ impl SearchControl {
     }
 }
 
-// board -> current node state
-// hash -> current hash state
-// depth -> how many plys are left
-// ply -> how many plys have we searched
-// alpha -> how good 
-fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
-        ztable: &ZobristTable,
-        tt: &mut FxHashMap<u64, TTEntry>,
-        killers: &mut [[(u8, u8); 2]; 64],
-        control: &mut SearchControl) -> i32 {
+#[inline]
+fn score_to_tt(value: i32, ply: i32) -> i32 {
+    if value >= MATE_THRESHOLD { value + ply }
+    else if value <= -MATE_THRESHOLD { value - ply }
+    else { value }
+}
+
+#[inline]
+fn score_from_tt(value: i32, ply: i32) -> i32 {
+    if value >= MATE_THRESHOLD { value - ply }
+    else if value <= -MATE_THRESHOLD { value + ply }
+    else { value }
+}
+
+// board   -> current node state
+// hash    -> current hash state
+// depth   -> plies left (may go negative via reductions; <= 0 drops to quiescence)
+// ply     -> plies searched so far
+// alpha   -> best score the side to move is already guaranteed
+// beta    -> score at which the opponent stops considering this line
+// null_ok -> may we try a null move here (false directly under a null move)
+//
+// Everything is from the point of view of the side to move.
+fn negamax(
+    board: &mut Board,
+    hash: u64,
+    depth: i32,
+    ply: i32,
+    mut alpha: i32,
+    mut beta: i32,
+    null_ok: bool,
+    ztable: &ZobristTable,
+    tt: &mut FxHashMap<u64, TTEntry>,
+    killers: &mut [[(u8, u8); 2]; 64],
+    control: &mut SearchControl,
+) -> i32 {
     if control.poll() {
         return 0; // discarded by caller once it sees control.aborted
     }
 
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
+
+    // only trust an entry searched at least as deep as we need.
+    let mut tt_move: Option<(u8, u8)> = None;
+    if let Some(entry) = tt.get(&hash) {
+        tt_move = Some(entry.best_move);
+        if entry.depth >= depth {
+            let value = score_from_tt(entry.value, ply);
+            match entry.bound {
+                Bound::Exact => return value,
+                Bound::Lower => alpha = alpha.max(value),
+                Bound::Upper => beta = beta.min(value),
+            }
+            if alpha >= beta { return value; }
+        }
+    }
+
+    // window we actually search with, for classifying the bound on store
     let alpha_orig = alpha;
     let beta_orig = beta;
 
-    // Only trust an entry searched at least as deep as we need.
-    if let Some(entry) = tt.get(&hash) {
-        if entry.depth >= depth {
-            match entry.bound {
-                Bound::Exact => return entry.value,
-                Bound::Lower => alpha = alpha.max(entry.value),
-                Bound::Upper => beta  = beta.min(entry.value),
-            }
-            if alpha >= beta { return entry.value; }
-        }
-    } 
-
-    // if we have reached max depth, return base value, but make sure we don't 
+    // if we have reached max depth, return base value, but make sure we don't
     // fall for horizon effect
-    if depth == 0 {
-        return quiescence(board, hash, ply, alpha, beta, ztable, tt, control);
+    if depth <= 0 {
+        return quiescence(board, ply, alpha, beta, control);
+    }
+
+    let in_check = is_in_check(board, side);
+
+    // NMP
+    // If we hand the opponent a free move and are STILL at or > beta, then
+    // our real best move is > beta too so why waste resources
+    if null_ok
+        && !in_check
+        && depth >= NULL_MIN_DEPTH
+        && beta.abs() < MATE_THRESHOLD
+        && has_non_pawn_piece(board, side)
+    {
+        if eval_stm(board, side) >= beta {
+            // make null -> flip side to move, drop en passant right
+            let prev_ep = board.en_passant_target;
+            let mut null_hash = hash ^ ztable.black_to_move;
+            if let Some(ep) = prev_ep {
+                null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
+            }
+            board.en_passant_target = None;
+            board.state ^= WHITE_TO_MOVE;
+
+            let r = NULL_BASE_REDUCTION + depth / 6;
+            // only care whether it beats beta
+            let score = -negamax(
+                board, null_hash, depth - 1 - r, ply + 1,
+                -beta, -beta + 1, false,
+                ztable, tt, killers, control,
+            );
+
+            // undo null
+            board.state ^= WHITE_TO_MOVE;
+            board.en_passant_target = prev_ep;
+
+            if control.aborted { return 0; }
+
+            if score >= beta {
+                return beta;
+            }
+        }
     }
 
     let mut moves = MoveListBuf::new();
     get_all_moves(board, side, &mut moves);
-    let mut best_move: (u8, u8) = moves.data[0];
 
-    // move value ordering + TT ordering
-    // victim value * 10 + (6 - attacker value) 
-    let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
+    // mate / stalemate check, before we touch moves.data
+    if moves.len == 0 {
+        return if in_check { -MATE + ply } else { 0 };
+    }
+
+    // move value ordering + TT ordering + killer ordering
+    // victim value * 10 + (6 - attacker value)
     let p = ply as usize;
     let this_ply_killers = if p < killers.len() { killers[p] } else { [(0,0); 2] };
     moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt_killer(board, mv, tt_move, this_ply_killers));
 
-    // mate check
-    if moves.len == 0 {
-        if is_in_check(board, side) {
-            // side to move is mated; score from White's perspective
-            return if board.state & WHITE_TO_MOVE != 0 { -500000 + ply  }
-                else                 {  500000 - ply  };
-        } else {
-            return 0; // stalemate
+    let mut best_move: (u8, u8) = moves.data[0];
+    let mut best = -INFINITY;
+
+    for i in 0..moves.len {
+        let mv = moves.data[i];
+        let undo = make_move(board, mv.0, mv.1);
+        let child_hash = ztable.update_hash(hash, board, &undo);
+
+        let score = -negamax(
+            board, child_hash, depth - 1, ply + 1,
+            -beta, -alpha, true,
+            ztable, tt, killers, control,
+        );
+
+        undo_move(board, undo);
+        if control.aborted { return 0; }
+
+        if score > best {
+            best = score;
+            best_move = mv;
+        }
+        if score > alpha { alpha = score; }
+
+        if alpha >= beta {
+            // board is back in its pre-move state here, so this tests whether
+            // the move WAS a capture
+            if !board.is_piece(mv.1) {
+                if p < killers.len() && killers[p][0] != mv {
+                    killers[p][1] = killers[p][0];
+                    killers[p][0] = mv;
+                }
+            }
+            break;
         }
     }
 
-    let value = if board.state & WHITE_TO_MOVE != 0 {
-        let mut eval = i32::MIN;
-        for i in 0..moves.len {
-            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let child_hash = ztable.update_hash(hash, board, &undo);
-            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, killers, control);
-            undo_move(board, undo);
-            if control.aborted { return 0; }
-
-            if child_eval > eval{
-                best_move = moves.data[i];
-                eval = child_eval;
-            }
-            alpha = alpha.max(eval);
-            if alpha >= beta {
-                let mv = moves.data[i];
-                let is_capture = board.is_piece(mv.1); // checked pre-move state, i.e. right now
-                if !is_capture {
-                    let p = ply as usize;
-                    if p < killers.len() && killers[p][0] != moves.data[i] {
-                        killers[p][1] = killers[p][0];
-                        killers[p][0] = moves.data[i];
-                    }
-                }
-                break;
-            }
-        }
-        eval
-    } else {
-        let mut eval = i32::MAX;
-        for i in 0..moves.len {
-            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let child_hash = ztable.update_hash(hash, board, &undo);
-            let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, killers, control);
-            undo_move(board, undo);
-            if control.aborted { return 0; }
-
-            if child_eval < eval{
-                best_move = moves.data[i];
-                eval = child_eval;
-            }
-            beta = beta.min(eval);
-            if beta <= alpha {
-                let mv = moves.data[i];
-                let is_capture = board.is_piece(mv.1); // checked pre-move state, i.e. right now
-                if !is_capture {
-                    let p = ply as usize;
-                    if p < killers.len() && killers[p][0] != mv {
-                        killers[p][1] = killers[p][0];
-                        killers[p][0] = mv;
-                    }
-                }
-                
-                break;
-            }
-        }
-        eval
-    };
-
-    let bound = if value <= alpha_orig { Bound::Upper }
-            else if value >= beta_orig { Bound::Lower }
+    let bound = if best <= alpha_orig { Bound::Upper }
+            else if best >= beta_orig { Bound::Lower }
             else { Bound::Exact };
     let should_insert = match tt.get(&hash) {
         Some(entry) => depth >= entry.depth,
         None => true,
     };
     if should_insert {
-        tt.insert(hash, TTEntry { depth, value, bound, best_move });
+        tt.insert(hash, TTEntry { depth, value: score_to_tt(best, ply), bound, best_move });
     }
-    
-    value
+
+    best
 }
 
 fn quiescence(
     board: &mut Board,
-    hash: u64,
     ply: i32,
     mut alpha: i32,
-    mut beta: i32,
-    ztable: &ZobristTable,
-    tt: &mut FxHashMap<u64, TTEntry>,
+    beta: i32,
     control: &mut SearchControl,
 ) -> i32 {
     if control.poll() {
@@ -333,74 +416,49 @@ fn quiescence(
 
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let in_check = is_in_check(board, side);
+    let stand_pat = eval_stm(board, side);
 
-    // Stand-pat — but only if we're not in check (can't "pass" out of check)
-    let stand_pat = evaluate(board);
+    // stand-pat
     if !in_check {
-        if side == Side::White {
-            if stand_pat >= beta { return beta; }
-            if stand_pat > alpha { alpha = stand_pat; }
-        } else {
-            if stand_pat <= alpha { return alpha; }
-            if stand_pat < beta { beta = stand_pat; }
-        }
+        if stand_pat >= beta { return stand_pat; }
+        if stand_pat > alpha { alpha = stand_pat; }
     }
 
-    // Generate moves. If in check, search ALL moves. Otherwise only captures.
-    let mut all_legal: bool = false;
+    // gen moves, reg. moves if in check and all captures otherwise
     let mut moves: MoveListBuf = MoveListBuf::new();
-    
     if in_check {
         get_all_moves(board, side, &mut moves);
-        all_legal = true;
     } else {
-        get_all_captures(board, side, &mut moves);  
-    };
+        get_all_captures(board, side, &mut moves);
+    }
 
-    // Mate / stalemate detection when in check with no legal moves
+    // found mate
     if moves.len == 0 {
-        if in_check {
-            return if side == Side::White { -500000 + ply } else { 500000 - ply };
-        }
-        else if all_legal{
-            return 0;
-        }
-        return stand_pat; // quiet position, no captures to consider
+        if in_check { return -MATE + ply; }
+        return stand_pat;
     }
 
-    // move value ordering + TT ordering
-    // victim value * 10 + (6 - attacker value) 
-    let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
-    moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(board, mv, tt_move));
+    moves.data[..moves.len].sort_by_key(|mv| mvv_lva(board, mv));
 
-    // maxxing
-    if side == Side::White {
-        for i in 0..moves.len {
-            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let new_hash = ztable.update_hash(hash, board, &undo);
-            let score = quiescence(board, new_hash, ply + 1, alpha, beta, ztable, tt, control);
-            undo_move(board, undo);
-            if control.aborted { return alpha; }
+    let mut best = if in_check { -INFINITY } else { stand_pat };
 
-            if score >= beta { return beta; }
-            if score > alpha { alpha = score; }
-        }
-        alpha
-    } else { // minimizing 
-        for i in 0..moves.len {
-            let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let new_hash = ztable.update_hash(hash, board, &undo);
-            let score = quiescence(board, new_hash, ply + 1, alpha, beta, ztable, tt, control);
-            undo_move(board, undo);
-            if control.aborted { return beta; }
+    for i in 0..moves.len {
+        let mv = moves.data[i];
+        let undo = make_move(board, mv.0, mv.1);
+        let score = -quiescence(board, ply + 1, -beta, -alpha, control);
+        undo_move(board, undo);
+        if control.aborted { return 0; }
 
-            if score <= alpha { return alpha; }
-            if score < beta { beta = score; }
-        }
-        beta
+        if score > best { best = score; }
+        if score > alpha { alpha = score; }
+        if alpha >= beta { break; }
     }
+
+    best
 }
 
+// white evaluation, made public and unchanged so anything outside the
+// search that calls it still gets what it expects.
 pub fn evaluate(board: &Board) -> i32 {
     let mut score = 0;
     for color in 0..2 {
@@ -420,11 +478,14 @@ pub fn evaluate(board: &Board) -> i32 {
     score
 }
 
-fn mvv_lva_tt(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
-    if tt_move == Some(*mv) {
-        return i32::MIN;
-    }
+// negamax needs the score from the point of view of the side to move.
+#[inline]
+fn eval_stm(board: &Board, side: Side) -> i32 {
+    let white_relative = evaluate(board);
+    if side == Side::White { white_relative } else { -white_relative }
+}
 
+fn mvv_lva(board: &Board, mv: &(u8,u8)) -> i32 {
     match if board.is_piece(mv.1) { Some(get_piece(board, mv.1)) } else { None } {
         Some(victim) => {
             let attacker_val = match if board.is_piece(mv.0) { Some(get_piece(board, mv.0)) } else { None } {
@@ -433,10 +494,15 @@ fn mvv_lva_tt(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
             };
             -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
         }
-        None => {
-            0
-        }
+        None => 0,
     }
+}
+
+fn mvv_lva_tt(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
+    if tt_move == Some(*mv) {
+        return i32::MIN;
+    }
+    mvv_lva(board, mv)
 }
 
 fn mvv_lva_tt_killer(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>, killers: [(u8,u8); 2]) -> i32 {
@@ -444,40 +510,17 @@ fn mvv_lva_tt_killer(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>, kill
         return i32::MIN;
     }
 
-    match if board.is_piece(mv.1) { Some(get_piece(board, mv.1)) } else { None } {
-        Some(victim) => {
-            let attacker_val = match if board.is_piece(mv.0) { Some(get_piece(board, mv.0)) } else { None } {
-                Some(a) => material_value(a.piece_type),
-                None => 0,
-            };
-            -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
-        }
-        None => {
-            if killers.contains(mv){
-                -1
-            }else{
-                0
-            }
-        }
+    let base = mvv_lva(board, mv);
+    if base == 0 && killers.contains(mv) {
+        -1 // quiet killer is put ahead of quiets
+    } else {
+        base
     }
-}
-
-fn calculate_depth_bonus(move_index: u8, root_moves: u8) -> i32{
-    let mut bonus = 0;
-
-    if move_index as f32 / root_moves as f32 > 0.7{
-        bonus -= 1;
-    }
-
-    if root_moves < 10{
-        bonus += 1;
-    }
-    bonus
 }
 
 fn compute_time_budget(time_left_ms: u128, increment_ms: u128, moves_played: u8) -> u128 {
-    const SAFETY_MARGIN_MS: u128 = 50;   // never spend all time 
-    const MIN_BUDGET_MS: u128 = 20;      // min time 
+    const SAFETY_MARGIN_MS: u128 = 50;   // never spend all time
+    const MIN_BUDGET_MS: u128 = 20;      // min time
 
     let assumed_moves_left: u128 = if moves_played < 40 { 30 } else { 15 };
 
@@ -500,8 +543,6 @@ fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{
         PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[idx]}   else {return 950 + QUEEN_TABLE_LATE[idx]},
         PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[idx]} else {return 100000 + KING_TABLE_LATE[idx] },
     };
-    
-
 }
 
 fn material_value(p_type: PieceType) -> i32{
@@ -515,6 +556,14 @@ fn material_value(p_type: PieceType) -> i32{
     }
 }
 
+// check if a side has a piece that is not king or pawn
+fn has_non_pawn_piece(board: &Board, side: Side) -> bool{
+    if board.bitboards[side as usize][PieceType::Bishop as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Rook as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Knight as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Queen as usize].0 != 0 {return true;}
+    false
+}
 
 fn build_book() -> FxHashMap<String, Vec<(u8, u8)>>{
     let mut book: FxHashMap<String, Vec<(u8, u8)>> = FxHashMap::default();
@@ -524,11 +573,11 @@ fn build_book() -> FxHashMap<String, Vec<(u8, u8)>>{
 
     let mut last_fen = String::from("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     for line in reader.lines() {
-        let line = line.expect("failed to read line"); 
+        let line = line.expect("failed to read line");
         if line.is_empty() || line.starts_with('#'){
             continue;
         }
-        
+
         if line.starts_with('$'){
             let raw = line.replace("$", "");
             let parts: Vec<&str> = raw.split_whitespace().collect();
@@ -555,7 +604,7 @@ fn build_book() -> FxHashMap<String, Vec<(u8, u8)>>{
 fn square_to_coord(sq: &str) -> (u8, u8) {
     let bytes = sq.as_bytes();
     let col = bytes[0] - b'a';        // 'a' -> 0, 'h' -> 7
-    let row = (bytes[1] - b'0') - 1;  
+    let row = (bytes[1] - b'0') - 1;
     (row, col)
 }
 
@@ -563,7 +612,7 @@ fn square_to_coord(sq: &str) -> (u8, u8) {
 enum Bound { Exact, Lower, Upper }
 
 #[derive(Clone, Copy)]
-struct TTEntry { depth: usize, value: i32, bound: Bound, best_move: (u8,u8) }
+struct TTEntry { depth: i32, value: i32, bound: Bound, best_move: (u8,u8) }
 
 struct ZobristTable {
     pieces: [[[u64; 64]; 2]; 6],
@@ -685,10 +734,10 @@ impl ZobristTable {
 
 }
 
-// ALL OF THESE ARE FROM WHITES PERSPECTIVE, USE 7 - ROW WHEN INDEXING FOR BLACK
+// ALL OF THESE ARE FROM BLACKS PERSPECTIVE
 
 const PAWN_TABLE: [i32; 64] = [
-    0,    0,    0,    0,    0,    0,    0,    0   ,  // promotion 
+    0,    0,    0,    0,    0,    0,    0,    0   ,  // promotion
     90,   90,   90,   90,   90,   90,   90,   90  ,
     25,   25,   50,   55,   55,   50,   25,   25  ,
     10,   10,   25,   50,   50,   25,   10,   10  ,
@@ -700,12 +749,12 @@ const PAWN_TABLE: [i32; 64] = [
 
 const PAWN_TABLE_LATE: [i32; 64] = [
     0,    0,    0,    0,    0,    0,    0,    0  ,  // PROMOTE PROMOTE PROMOTE
-    120,  120,  120,  120,  120,  120,  120,  120  ,  // 
-    70,   70,   70,   70,   70,   70,   70,   70  ,  // 
-    40,   40,   40,   40,   40,   40,   40,   40  ,  // 
-    25,   25,   25,   25,   25,   25,   25,   25  ,  // 
-    10,   10,   10,   10,   10,   10,   10,   10  ,  // 
-    5,    5,    5,    5,    5,    5,    5,    5  ,  // 
+    120,  120,  120,  120,  120,  120,  120,  120  ,  //
+    70,   70,   70,   70,   70,   70,   70,   70  ,  //
+    40,   40,   40,   40,   40,   40,   40,   40  ,  //
+    25,   25,   25,   25,   25,   25,   25,   25  ,  //
+    10,   10,   10,   10,   10,   10,   10,   10  ,  //
+    5,    5,    5,    5,    5,    5,    5,    5  ,  //
     0,    0,    0,    0,    0,    0,    0,    0  ,  // starting rank
 ];
 
@@ -716,7 +765,7 @@ const KNIGHT_TABLE: [i32; 64] = [
      -50,     5,    10,    25,   25,    10,    5,   -50  ,
      -50,     5,    10,    25,   25,    10,    5,   -50  ,
      -50,     0,    10,    15,   15,    10,    5,   -50  ,
-     -50,    -5,   -5,     5,    5,    -5,    -5,   -50  ,  
+     -50,    -5,   -5,     5,    5,    -5,    -5,   -50  ,
      -50,    -10,  -30,   -30,  -30,   -30,   -10,  -50  ,  // starting rank
 ];
 
@@ -739,11 +788,11 @@ const BISHOP_TABLE_LATE: [i32; 64] = [
       -5,   5,  10,  15,  15,  10,   5,  -5 ,
       -5,   5,  10,  10,  10,  10,   5,  -5 ,
       -5,   5,   5,   5,   5,   5,   5,  -5 ,
-     -10,  -5, -15,  -5,  -5, -15,  -5, -10 , 
+     -10,  -5, -15,  -5,  -5, -15,  -5, -10 ,
 ];
 
 const ROOK_TABLE: [i32; 64] = [
-      0,   0,   0,   0,   0,   0,   0,   0 , 
+      0,   0,   0,   0,   0,   0,   0,   0 ,
      10,  15,  15,  15,  15,  15,  15,  10 ,  // 7th rank bonus
      -5,   0,   0,   0,   0,   0,   0,  -5 ,
      -5,   0,   0,   0,   0,   0,   0,  -5 ,
@@ -754,14 +803,14 @@ const ROOK_TABLE: [i32; 64] = [
 ];
 
 const ROOK_TABLE_LATE: [i32; 64] = [
-      5,   5,   5,   5,   5,   5,   5,   5 ,  
-     15,  20,  20,  20,  20,  20,  20,  15 , 
+      5,   5,   5,   5,   5,   5,   5,   5 ,
+     15,  20,  20,  20,  20,  20,  20,  15 ,
       0,   5,   5,   5,   5,   5,   5,   0 ,
       0,   5,  10,  10,  10,  10,   5,   0 ,
       0,   5,  10,  10,  10,  10,   5,   0 ,
       0,   5,   5,  10,  10,   5,   5,   0 ,
       0,   5,   5,   5,   5,   5,   5,   0 ,
-      0,   5,   5,   5,   5,   5,   5,   0 ,  // starting rank 
+      0,   5,   5,   5,   5,   5,   5,   0 ,  // starting rank
 ];
 
 

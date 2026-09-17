@@ -416,7 +416,11 @@ fn handle_uci_go(tokens: &[&str], board: &Board, ai: &MinimaxAI, side: Side) -> 
     let (time_remaining, increment) = if side == Side::White { (wtime, winc) } else { (btime, binc) };
 
     let mv = ai.get_move(board, side, time_remaining, increment);
-    println!("bestmove {}", (index_move_to_uci(mv.0) + index_move_to_uci(mv.1).as_str()));
+    if board.is_piece(mv.0) && get_piece(board, mv.0).piece_type == PieceType::Pawn && (mv.1 / 8 == 0 || mv.1 / 8 == 7){
+        println!("bestmove {}q", (index_move_to_uci(mv.0) + index_move_to_uci(mv.1).as_str()));
+    }else{
+        println!("bestmove {}", (index_move_to_uci(mv.0) + index_move_to_uci(mv.1).as_str()));
+    }
     mv
 }
 
