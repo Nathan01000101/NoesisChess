@@ -1,6 +1,6 @@
 use macroquad::{prelude::*};
-use crate::types::{Side, Board, MoveBuf, Piece, PieceType};
-use crate::movegen::{get_valid_moves_standalone, get_capture_moves};
+use crate::types::{Side, Board, Piece, PieceType};
+use crate::movegen::{get_valid_moves_standalone};
 use crate::board::get_piece;
 
 pub fn draw_board(tile_size: f32) {
@@ -18,18 +18,13 @@ pub fn draw_board(tile_size: f32) {
 
 pub fn draw_moves(tile_size: f32, board: &mut Board, selected_piece: u8, flipped: bool){
     let moves: Vec<u8> = get_valid_moves_standalone(board, selected_piece);
-    let mut buf = MoveBuf::new();
-    get_capture_moves(board, selected_piece, &mut buf);
-    let mut captures = Vec::new();
-    for i in 0..buf.len{
-        captures.push(buf.data[i]);
-    }
     let color = Color::from_rgba(100, 50, 50, 100);
     for mv in moves {
+        let is_capture = board.is_piece(mv) || (get_piece(board, selected_piece).piece_type == PieceType::Pawn && board.en_passant_target.is_some_and(|sq| sq == mv));
         let col = if flipped {7 - mv % 8} else {mv % 8};
         let row = if flipped {mv / 8} else {7 - (mv / 8)};
 
-        if captures.contains(&mv){
+        if is_capture{
             draw_circle_lines(col as f32 * tile_size + tile_size*0.5, row as f32 * tile_size + tile_size*0.5, tile_size/3.0, tile_size/8.0, color);
         }else{
             draw_circle(col as f32 * tile_size + tile_size*0.5, row as f32 * tile_size + tile_size*0.5, tile_size/4.0, color);

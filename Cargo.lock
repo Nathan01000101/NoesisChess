@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "Noesis"
+version = "0.2.98"
+dependencies = [
+ "dashmap",
+ "macroquad",
+ "rand",
+ "rayon",
+ "rustc-hash",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -67,17 +78,6 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
-
-[[package]]
-name = "chess_engine"
-version = "0.1.0"
-dependencies = [
- "dashmap",
- "macroquad",
- "rand",
- "rayon",
- "rustc-hash",
-]
 
 [[package]]
 name = "color_quant"
