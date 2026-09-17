@@ -77,20 +77,10 @@ impl Player for MinimaxAI {
         let mut moves = MoveListBuf::new();
         get_all_moves(&mut b, side, &mut moves);
 
-        // move ordering
-        // victim_value * 10 + (6 - attacker_value)
-        moves.data[..moves.len].sort_by_key(|mv| {
-            match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
-                Some(victim) => {
-                    let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
-                        Some(a) => material_value(a.piece_type),
-                        None => 0,
-                    };
-                    -(material_value(victim.piece_type) * 10  + (6 - attacker_val))
-                }
-                None => 0,
-            }
-        });
+        // move value ordering + TT ordering
+        // victim value * 10 + (6 - attacker value) 
+        let tt_move = tt.get(&root_hash).and_then(|entry| Some(entry.best_move));
+        moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
 
         // fallback in case even depth 1 somehow can't finish
         let mut best_move: (u8, u8) = moves.data[0];
@@ -210,7 +200,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let alpha_orig = alpha;
     let beta_orig = beta;
-    
+
     // Only trust an entry searched at least as deep as we need.
     if let Some(entry) = tt.get(&hash) {
         if entry.depth >= depth {
@@ -226,27 +216,17 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     // if we have reached max depth, return base value, but make sure we don't 
     // fall for horizon effect
     if depth == 0 {
-        return quiescence(board, ply, alpha, beta, ztable, tt, control);
+        return quiescence(board, hash, ply, alpha, beta, ztable, tt, control);
     }
 
     let mut moves = MoveListBuf::new();
     get_all_moves(board, side, &mut moves);
-    
+    let mut best_move: (u8, u8) = moves.data[0];
 
-    // move ordering
+    // move value ordering + TT ordering
     // victim value * 10 + (6 - attacker value) 
-    moves.data[..moves.len].sort_by_key(|mv| {
-        match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
-            Some(victim) => {
-                let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
-                    Some(a) => material_value(a.piece_type),
-                    None => 0,
-                };
-                -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
-            }
-            None => 0,
-        }
-    });
+    let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
+    moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
 
     // mate check
     if moves.len == 0 {
@@ -260,15 +240,18 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     }
 
     let value = if board.state & WHITE_TO_MOVE != 0 {
-    let mut eval = i32::MIN;
-    for i in 0..moves.len {
+        let mut eval = i32::MIN;
+        for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
             let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
             if control.aborted { return 0; }
 
-            eval = child_eval.max(eval);
+            if child_eval > eval{
+                best_move = moves.data[i];
+                eval = child_eval;
+            }
             alpha = alpha.max(eval);
             if alpha >= beta { break; }
         }
@@ -282,7 +265,10 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
             undo_move(board, undo);
             if control.aborted { return 0; }
 
-            eval = child_eval.min(eval);
+            if child_eval < eval{
+                best_move = moves.data[i];
+                eval = child_eval;
+            }
             beta = beta.min(eval);
             if beta <= alpha { break; }
         }
@@ -292,12 +278,20 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     let bound = if value <= alpha_orig { Bound::Upper }
             else if value >= beta_orig { Bound::Lower }
             else { Bound::Exact };
-    tt.insert(hash, TTEntry { depth, value, bound });
+    let should_insert = match tt.get(&hash) {
+        Some(entry) => depth >= entry.depth,
+        None => true,
+    };
+    if should_insert {
+        tt.insert(hash, TTEntry { depth, value, bound, best_move });
+    }
+    
     value
 }
 
 fn quiescence(
     board: &mut Board,
+    hash: u64,
     ply: i32,
     mut alpha: i32,
     mut beta: i32,
@@ -346,25 +340,17 @@ fn quiescence(
         return stand_pat; // quiet position, no captures to consider
     }
 
-    // move ordering
-    // victim_value * 10 + (6 - attacker_value)
-    moves.data[..moves.len].sort_by_key(|mv| {
-        match if board.is_piece(mv.1) {Some(get_piece(board, mv.1))} else {None} {
-            Some(victim) => {
-                let attacker_val = match if board.is_piece(mv.0) {Some(get_piece(board, mv.0))} else {None} {
-                    Some(a) => material_value(a.piece_type),
-                    None => 0,
-                };
-                -(material_value(victim.piece_type) * 10  + (6 - attacker_val))
-            }
-            None => 0,
-        }
-    });
+    // move value ordering + TT ordering
+    // victim value * 10 + (6 - attacker value) 
+    let tt_move = tt.get(&hash).and_then(|entry| Some(entry.best_move));
+    moves.data[..moves.len].sort_by_key(|mv| move_order_score(board, mv, tt_move));
 
+    // maxxing
     if side == Side::White {
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt, control);
+            let new_hash = ztable.update_hash(hash, board, &undo);
+            let score = quiescence(board, new_hash, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
             if control.aborted { return alpha; }
 
@@ -372,10 +358,11 @@ fn quiescence(
             if score > alpha { alpha = score; }
         }
         alpha
-    } else {
+    } else { // minimizing 
         for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
-            let score = quiescence(board, ply + 1, alpha, beta, ztable, tt, control);
+            let new_hash = ztable.update_hash(hash, board, &undo);
+            let score = quiescence(board, new_hash, ply + 1, alpha, beta, ztable, tt, control);
             undo_move(board, undo);
             if control.aborted { return beta; }
 
@@ -403,6 +390,25 @@ pub fn evaluate(board: &Board) -> i32 {
         }
     }
     score
+}
+
+fn move_order_score(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>) -> i32 {
+    if tt_move == Some(*mv) {
+        return i32::MIN;
+    }
+
+    match if board.is_piece(mv.1) { Some(get_piece(board, mv.1)) } else { None } {
+        Some(victim) => {
+            let attacker_val = match if board.is_piece(mv.0) { Some(get_piece(board, mv.0)) } else { None } {
+                Some(a) => material_value(a.piece_type),
+                None => 0,
+            };
+            -(material_value(victim.piece_type) * 10 + (6 - attacker_val))
+        }
+        None => {
+            0
+        }
+    }
 }
 
 fn calculate_depth_bonus(move_index: u8, root_moves: u8) -> i32{
@@ -433,25 +439,17 @@ fn compute_time_budget(time_left_ms: u128, increment_ms: u128, moves_played: u8)
 }
 
 fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{
-    if piece.color == Side::White{
-        match piece.piece_type {
-            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[63 - coord as usize]}          else {return 105 + PAWN_TABLE_LATE[63 - coord as usize]},
-            PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[63 - coord as usize]}        else {return 275 + KNIGHT_TABLE[63 - coord as usize]},
-            PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[63 - coord as usize] }      else {return 350 + BISHOP_TABLE_LATE[63 - coord as usize]},
-            PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[63 - coord as usize]}          else {return 570 + ROOK_TABLE_LATE[63 - coord as usize]},
-            PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[63 - coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[ 63 - coord as usize]},
-            PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[63 - coord as usize]} else {return 100000 + KING_TABLE_LATE[63 - coord as usize] },
-        };
-    }else{
-        match piece.piece_type {
-            PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[coord as usize]}          else {return 105 + PAWN_TABLE_LATE[coord as usize]},
-            PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[coord as usize]}        else {return 250 + KNIGHT_TABLE[coord as usize]},
-            PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[coord as usize] }      else {return 350 + BISHOP_TABLE_LATE[coord as usize]},
-            PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[coord as usize]}          else {return 570 + ROOK_TABLE_LATE[coord as usize]},
-            PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[coord as usize]}   else {return 950 + QUEEN_TABLE_LATE[coord as usize]},
-            PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[coord as usize]} else {return 100000 + KING_TABLE_LATE[coord as usize] },
-        };
-    }
+    let idx = if piece.color == Side::White {63 - coord as usize} else {coord as usize};
+
+    match piece.piece_type {
+        PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[idx]}          else {return 105 + PAWN_TABLE_LATE[idx]},
+        PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[idx]}        else {return 275 + KNIGHT_TABLE[idx]},
+        PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[idx] }      else {return 350 + BISHOP_TABLE_LATE[idx]},
+        PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[idx]}          else {return 570 + ROOK_TABLE_LATE[idx]},
+        PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[idx]}   else {return 950 + QUEEN_TABLE_LATE[idx]},
+        PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[idx]} else {return 100000 + KING_TABLE_LATE[idx] },
+    };
+    
 
 }
 
@@ -514,7 +512,7 @@ fn square_to_coord(sq: &str) -> (u8, u8) {
 enum Bound { Exact, Lower, Upper }
 
 #[derive(Clone, Copy)]
-struct TTEntry { depth: usize, value: i32, bound: Bound }
+struct TTEntry { depth: usize, value: i32, bound: Bound, best_move: (u8,u8) }
 
 struct ZobristTable {
     pieces: [[[u64; 64]; 2]; 6],
