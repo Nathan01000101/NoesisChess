@@ -28,7 +28,7 @@ impl Config {
         .position(|a| a == "--depth")
         .and_then(|i| args.get(i + 1))
         .and_then(|d| d.parse::<usize>().ok())
-        .unwrap_or(FALLBACK_DEPTH),
+        .unwrap_or(MAX_DEPTH),
 
             fen: String::from(args.iter()
         .position(|a| a == "--fen")

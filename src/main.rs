@@ -14,7 +14,7 @@ mod types;
 
 
 const WINDOW_SIZE: f32 = 600.0;
-pub const FALLBACK_DEPTH: usize = 10;
+pub const MAX_DEPTH: usize = 10;
 
 fn main() {
 println!(r#" Thank you for using

@@ -1,14 +1,41 @@
 use crate::types::{Bitboard, Side, PieceType, Board, MoveBuf, MoveListBuf, WHITE_TO_MOVE, WHITE_LONG, WHITE_SHORT, BLACK_LONG, BLACK_SHORT};
 use crate::board::{get_piece, make_move, undo_move, get_side_bitboard};
-use crate::attacks::{KNIGHT_MOVES, PAWN_MOVES, KING_MOVES, ROOK_MASKS, ROOK_SHIFTS, ROOK_MAGIC_TABLE, STRAIGHT_VALID_MOVES, BISHOP_MASKS, BISHOP_SHIFTS, BISHOP_MAGIC_TABLE, DIAGONAL_VALID_MOVES};
+use crate::attacks::{BISHOP_MAGIC_TABLE, BISHOP_MASKS, BISHOP_SHIFTS, DIAGONAL_VALID_MOVES, KING_MOVES, KNIGHT_MOVES, PAWN_MOVES, ROOK_MAGIC_TABLE, ROOK_MASKS, ROOK_SHIFTS, STRAIGHT_VALID_MOVES, get_bishop_moves, get_rook_moves};
 
-// Returns true if `sq` lies on the same rank, file, or diagonal as `target`.
-pub fn is_on_ray_from(target: u8, sq: u8) -> bool {
-    if target == sq { return false; }
-    let dr = (sq / 8 )as i16 - (target / 8) as i16;
-    let dc = (sq - (sq / 8) * 8 ) as i16 - (target - (target / 8) * 8 ) as i16;
-    // Same rank, same file, or same diagonal (|dr| == |dc|).
-    dr == 0 || dc == 0 || dr.abs() == dc.abs()
+// is the piece on square pinned?
+pub fn is_pinned(board: &Board, square: u8, friendly_side: Side) -> bool{
+    let king_square = board.bitboards[friendly_side as usize][PieceType::King as usize].0.trailing_zeros() as u8;
+    let rook_from_king = get_rook_moves(board.occupied, king_square);
+    let bishop_from_king = get_bishop_moves(board.occupied, king_square);
+
+    // given piece must be currently blocking a ray
+    let is_orthogonal = rook_from_king & (1 << square) != 0;
+    if is_orthogonal || bishop_from_king & 1 << square != 0{
+        let remove_square = board.occupied ^ 1 << square;
+        let new_rook_from_king = get_rook_moves(remove_square, king_square);
+        let new_bishop_from_king = get_bishop_moves(remove_square, king_square);
+        
+        // what is new on the rays (on these rays but not previous rays)
+        let newly_discovered = (new_rook_from_king | new_bishop_from_king) & !(rook_from_king | bishop_from_king);
+        
+        //if what is newly discovered connects on another piece
+        if newly_discovered & board.occupied != 0{
+            let piece = get_piece(board, (newly_discovered & board.occupied).trailing_zeros() as u8);
+            if piece.color != friendly_side{
+                if is_orthogonal{ // orthogonal
+                    if piece.piece_type == PieceType::Queen || piece.piece_type == PieceType::Rook{
+                        return true;
+                    }
+                }else{ // diagonal
+                    if piece.piece_type == PieceType::Queen || piece.piece_type == PieceType::Bishop{
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    false
 }
 
 // determines if a side is in check with a given board state
@@ -77,16 +104,14 @@ pub fn is_square_attacked(board: &Board, square: u8, side: Side) -> bool{
     false
 }
 
+// propagates list with possible moves for piece on square
 pub fn get_pseudo_legal_moves(board: &Board, square: u8, list: &mut MoveBuf){
     if board.is_piece(square) {
         let p = get_piece(board, square);
         let friendly = get_side_bitboard(board, p.color);
         match p.piece_type{
             PieceType::Bishop => {
-                let mask = BISHOP_MASKS[square as usize];
-                let shift = BISHOP_SHIFTS[square as usize];
-                let key = (((board.occupied & mask).wrapping_mul(BISHOP_MAGIC_TABLE[square as usize])) >> shift) as usize;
-                let mut moves = DIAGONAL_VALID_MOVES[square as usize][key].0 & !friendly.0 ;
+                let mut moves = get_bishop_moves(board.occupied, square) & !friendly.0 ;
 
                 while moves != 0{
                     let bit = moves.trailing_zeros();
@@ -148,21 +173,14 @@ pub fn get_pseudo_legal_moves(board: &Board, square: u8, list: &mut MoveBuf){
 
             },
             PieceType::Queen => {
-                let s_mask = ROOK_MASKS[square as usize];
-                let s_shift = ROOK_SHIFTS[square as usize];
-                let s_key = (((board.occupied & s_mask).wrapping_mul(ROOK_MAGIC_TABLE[square as usize])) >> s_shift) as usize;
-                let mut s_moves = STRAIGHT_VALID_MOVES[square as usize][s_key].0 & !friendly.0 ;
+                let mut s_moves = get_rook_moves(board.occupied, square) & !friendly.0 ;
 
                 while s_moves != 0{
                     let bit = s_moves.trailing_zeros();
                     list.push(bit as u8);
                     s_moves ^= 1 << bit;
                 }
-
-                let d_mask = BISHOP_MASKS[square as usize];
-                let d_shift = BISHOP_SHIFTS[square as usize];
-                let d_key = (((board.occupied & d_mask).wrapping_mul(BISHOP_MAGIC_TABLE[square as usize])) >> d_shift) as usize;
-                let mut d_moves = DIAGONAL_VALID_MOVES[square as usize][d_key].0 & !friendly.0 ;
+                let mut d_moves = get_bishop_moves(board.occupied, square) & !friendly.0 ;
 
                 while d_moves != 0{
                     let bit = d_moves.trailing_zeros();
@@ -171,10 +189,7 @@ pub fn get_pseudo_legal_moves(board: &Board, square: u8, list: &mut MoveBuf){
                 }
             }
             PieceType::Rook => {
-                let mask = ROOK_MASKS[square as usize];
-                let shift = ROOK_SHIFTS[square as usize];
-                let key = (((board.occupied & mask).wrapping_mul(ROOK_MAGIC_TABLE[square as usize])) >> shift) as usize;
-                let mut moves = STRAIGHT_VALID_MOVES[square as usize][key].0 & !friendly.0 ;
+                let mut moves = get_rook_moves(board.occupied, square) & !friendly.0 ;
 
                 while moves != 0{
                     let bit = moves.trailing_zeros();
@@ -235,7 +250,7 @@ pub fn get_valid_moves(board: &mut Board, square: u8, currently_in_check: bool, 
 
     // Hoisted out of the loop: these don't change as we iterate destinations.
     let piece_is_king = piece.piece_type == PieceType::King;
-    let piece_on_king_ray = is_on_ray_from(board.bitboards[moving_color as usize][PieceType::King as usize].0.trailing_zeros() as u8, square);
+    let pinned = is_pinned(board, square, moving_color);
 
     let ep_target = board.en_passant_target;
 
@@ -252,7 +267,7 @@ pub fn get_valid_moves(board: &mut Board, square: u8, currently_in_check: bool, 
 
         let needs_full_check = piece_is_king
             || currently_in_check
-            || piece_on_king_ray
+            || pinned
             || is_en_passant;
 
         if !needs_full_check {
@@ -283,7 +298,6 @@ pub fn get_valid_moves_standalone(board: &mut Board, square: u8) -> Vec<u8> {
     list
 }
 
-
 // returns only moves that capture pieces (including en passant) for a single piece
 pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
     if !board.is_piece(square) { return }
@@ -295,7 +309,7 @@ pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
 
     let currently_in_check = is_in_check(board, moving_color);
     let piece_is_king = piece.piece_type == PieceType::King;
-    let piece_on_king_ray = is_on_ray_from(board.bitboards[piece.color as usize][PieceType::King as usize].0.trailing_zeros() as u8, square);
+    let pinned_to_king = is_pinned(board, square, moving_color);
 
     for i in 0..pseudo.len {
         let is_en_passant = piece.piece_type == PieceType::Pawn
@@ -307,7 +321,7 @@ pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
 
         let needs_full_check = piece_is_king
             || currently_in_check
-            || piece_on_king_ray
+            || pinned_to_king
             || is_en_passant;
 
         if !needs_full_check {
@@ -324,6 +338,44 @@ pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
     }
 }
 
+pub fn get_quiet_moves(board: &mut Board, square: u8, quiet: &mut MoveBuf){
+    if !board.is_piece(square) { return }
+    let piece = get_piece(board, square);
+    let mut pseudo: MoveBuf = MoveBuf::new();
+    get_pseudo_legal_moves(&board, square, &mut pseudo);
+
+    let moving_color = piece.color;
+
+    let currently_in_check = is_in_check(board, moving_color);
+    let piece_is_king = piece.piece_type == PieceType::King;
+    let pinned_to_king = is_pinned(board, square, moving_color);
+
+    for i in 0..pseudo.len {
+        let is_en_passant = piece.piece_type == PieceType::Pawn
+            && pseudo.data[i] % 8 != square % 8
+            && if board.en_passant_target.is_some() {board.en_passant_target.unwrap() == pseudo.data[i]} else {false};
+
+        let is_capture = board.is_piece(pseudo.data[i]) || is_en_passant;
+        if is_capture { continue; }
+
+        let needs_full_check = piece_is_king
+            || currently_in_check
+            || pinned_to_king;
+
+        if !needs_full_check {
+            quiet.push(pseudo.data[i]);
+            continue;
+        }
+
+        let undo = make_move(board, square, pseudo.data[i]);
+        let in_check = is_in_check(board, moving_color);
+        undo_move(board, undo);
+        if !in_check {
+            quiet.push(pseudo.data[i]);
+        }
+    }
+}
+
 // gets all captures a side can make ((from), (to))
 pub fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf) {
     let mut friendly_pieces = get_side_bitboard(board, side);
@@ -332,6 +384,21 @@ pub fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf)
         let bit = friendly_pieces.0.trailing_zeros();
         buf.len = 0;
         get_capture_moves(board, bit as u8, &mut buf);
+        for i in 0..buf.len{
+            buffer.push(bit as u8, buf.data[i]);
+        }
+        friendly_pieces.0 ^= 1 << bit;
+    }
+}
+
+// gets all moves for a side that aren't captures
+pub fn get_all_quiets(board: &mut Board, side:Side, buffer: &mut MoveListBuf){
+        let mut friendly_pieces = get_side_bitboard(board, side);
+    let mut buf = MoveBuf::new();
+    while friendly_pieces.0 != 0{
+        let bit = friendly_pieces.0.trailing_zeros();
+        buf.len = 0;
+        get_quiet_moves(board, bit as u8, &mut buf);
         for i in 0..buf.len{
             buffer.push(bit as u8, buf.data[i]);
         }
@@ -354,6 +421,7 @@ pub fn get_all_moves(board: &mut Board, side: Side, buffer: &mut MoveListBuf){
         friendly_pieces.0 ^= 1 << bit;
     }
 }
+
 
 // gets num of moves that a side can make
 pub fn get_move_count(board: &mut Board, side: Side) -> u8{

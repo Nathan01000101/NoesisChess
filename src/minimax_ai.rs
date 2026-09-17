@@ -49,6 +49,7 @@ impl Player for MinimaxAI {
             self.tt.lock().unwrap().clear();
         }
         println!("info hashfull {}", ((self.tt.lock().unwrap().len() as f32/MAX_TABLE_SIZE as f32) * 1000.0) as i32 );
+        
 
         // before calculating move manually, check if position exists in our opening book
         let full_fen: String = to_fen(board);
@@ -112,6 +113,7 @@ impl Player for MinimaxAI {
                 let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
                 let bonus = calculate_depth_bonus(i as u8, moves.len as u8);
                 let mut eval = minimax(&mut b, child_hash, current_depth.saturating_sub((1 - bonus) as usize), 1, alpha, beta, &self.zobrist, tt, &mut control);
+                println!("info nodes {}", control.nodes);
                 undo_move(&mut b, undo);
 
                 if control.aborted {
@@ -143,7 +145,7 @@ impl Player for MinimaxAI {
 
             current_depth += 1;
             if current_depth > self.depth {
-                break; // safety cap
+                break; // dont exceed max depth
             }
         }
 
@@ -192,6 +194,11 @@ impl SearchControl {
     }
 }
 
+// board -> current node state
+// hash -> current hash state
+// depth -> how many plys are left
+// ply -> how many plys have we searched
+// alpha -> how good 
 fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32, mut beta: i32,
         ztable: &ZobristTable,
         tt: &mut FxHashMap<u64, TTEntry>,
@@ -203,6 +210,7 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     let side = if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black };
     let alpha_orig = alpha;
     let beta_orig = beta;
+    
     // Only trust an entry searched at least as deep as we need.
     if let Some(entry) = tt.get(&hash) {
         if entry.depth >= depth {
@@ -215,6 +223,8 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
         }
     } 
 
+    // if we have reached max depth, return base value, but make sure we don't 
+    // fall for horizon effect
     if depth == 0 {
         return quiescence(board, ply, alpha, beta, ztable, tt, control);
     }
@@ -250,8 +260,8 @@ fn minimax(board: &mut Board, hash: u64, depth: usize, ply: i32, mut alpha: i32,
     }
 
     let value = if board.state & WHITE_TO_MOVE != 0 {
-        let mut eval = i32::MIN;
-        for i in 0..moves.len {
+    let mut eval = i32::MIN;
+    for i in 0..moves.len {
             let undo = make_move(board, moves.data[i].0, moves.data[i].1);
             let child_hash = ztable.update_hash(hash, board, &undo);
             let child_eval = minimax(board, child_hash, depth - 1, ply + 1, alpha, beta, ztable, tt, control);

@@ -65,7 +65,7 @@ pub fn from_fen(fen: &str) -> Board {
         board.en_passant_target = Some(ep_rank * 8 + ep_file);
     }
 
-    let halfmove = parts[4].parse::<u16>().unwrap();
+    let _halfmove = parts[4].parse::<u16>().unwrap();
 
     let fullmove = parts[5].parse::<u8>().unwrap();
     let ply_offset = if turn.starts_with('b') { 1 } else { 0 };
