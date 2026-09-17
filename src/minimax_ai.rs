@@ -91,7 +91,7 @@ impl Player for MinimaxAI {
         get_all_moves(&mut b, side, &mut moves);
 
         if moves.len == 0 {
-            // mated or stalemated at the root; caller should've have asked for move
+            // mated or stalemated at the root.. caller shouldn't have asked for move
             return (0, 0);
         }
 
@@ -137,9 +137,7 @@ impl Player for MinimaxAI {
                     depth_completed = false;
                     break;
                 }
-
-                // Repetition penalty is now unconditional: at the root, higher
-                // is always better for the side to move.
+                // check for repetition
                 if mh_guard.contains(&child_hash) {
                     score -= MOVE_REPETITION_PENALTY;
                 }
@@ -182,7 +180,7 @@ impl Player for MinimaxAI {
             }
 
             // do not start next iter if we dont have time.
-            if start.elapsed().as_millis() * 2 >= time_budget {
+            if start.elapsed().as_millis() * 3 >= time_budget {
                 break;
             }
         }
@@ -224,8 +222,11 @@ impl SearchControl {
     fn poll(&mut self) -> bool {
         if self.aborted { return true; }
         self.nodes += 1;
-        if self.nodes & NODES_PER_TIME_CHECK == 0 && self.start.elapsed() >= self.budget {
-            self.aborted = true;
+        if self.nodes & NODES_PER_TIME_CHECK == 0{
+            if self.start.elapsed() >= self.budget {
+                self.aborted = true;
+            }
+            println!("info nodes {}",self.nodes);
         }
         self.aborted
     }
@@ -300,47 +301,46 @@ fn negamax(
 
     let in_check = is_in_check(board, side);
 
-    // NMP
+    // Null Move Prunning
     // If we hand the opponent a free move and are STILL at or > beta, then
     // our real best move is > beta too so why waste resources
-    if beta - alpha > 1{
-        if null_ok
-            && beta - alpha == 1
-            && !in_check
-            && depth >= NULL_MIN_DEPTH
-            && beta.abs() < MATE_THRESHOLD
-            && has_non_pawn_piece(board, side)
-        {
-            if eval_stm(board, side) >= beta {
-                // make null -> flip side to move, drop en passant right
-                let prev_ep = board.en_passant_target;
-                let mut null_hash = hash ^ ztable.black_to_move;
-                if let Some(ep) = prev_ep {
-                    null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
-                }
-                board.en_passant_target = None;
-                board.state ^= WHITE_TO_MOVE;
+    if null_ok
+        && beta - alpha == 1
+        && !in_check
+        && depth >= NULL_MIN_DEPTH
+        && beta.abs() < MATE_THRESHOLD
+        && has_non_pawn_piece(board, side)
+    {
+        if eval_stm(board, side) >= beta {
+            // make null -> flip side to move, drop en passant right
+            let prev_ep = board.en_passant_target;
+            let mut null_hash = hash ^ ztable.black_to_move;
+            if let Some(ep) = prev_ep {
+                null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
+            }
+            board.en_passant_target = None;
+            board.state ^= WHITE_TO_MOVE;
 
-                let r = NULL_BASE_REDUCTION + depth / 6;
-                // only care whether it beats beta
-                let score = -negamax(
-                    board, null_hash, depth - 1 - r, ply + 1,
-                    -beta, -beta + 1, false,
-                    ztable, tt, killers, control,
-                );
+            let r = NULL_BASE_REDUCTION + depth / 6;
+            // only care whether it beats beta
+            let score = -negamax(
+                board, null_hash, depth - 1 - r, ply + 1,
+                -beta, -beta + 1, false,
+                ztable, tt, killers, control,
+            );
 
-                // undo null
-                board.state ^= WHITE_TO_MOVE;
-                board.en_passant_target = prev_ep;
+            // undo null
+            board.state ^= WHITE_TO_MOVE;
+            board.en_passant_target = prev_ep;
 
-                if control.aborted { return 0; }
+            if control.aborted { return 0; }
 
-                if score >= beta {
-                    return beta;
-                }
+            if score >= beta {
+                return beta;
             }
         }
     }
+    
 
 
     let mut moves = MoveListBuf::new();
@@ -381,8 +381,7 @@ fn negamax(
         if score > alpha { alpha = score; }
 
         if alpha >= beta {
-            // board is back in its pre-move state here, so this tests whether
-            // the move WAS a capture
+            //tests whether the move was a capture
             if !board.is_piece(mv.1) {
                 if p < killers.len() && killers[p][0] != mv {
                     killers[p][1] = killers[p][0];

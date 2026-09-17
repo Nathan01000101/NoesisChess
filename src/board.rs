@@ -259,7 +259,7 @@ pub fn make_move(board: &mut Board, old: u8, new: u8) -> Undo{
 
 pub fn undo_move(board: &mut Board, undo: Undo){
     board.state = undo.previous_state;
-    if board.state & WHITE_TO_MOVE != 0{
+    if board.state & WHITE_TO_MOVE == 0{
         board.moves -= 1;
     }
     

@@ -129,7 +129,7 @@ fn check_mask(board: &Board, king_sq: u8, checkers: u64) -> u64 {
 }
 
 // --------------------------
-// the move generator >.<
+// the move generator ^.^
 // --------------------------
 
 fn generate(board: &mut Board, side: Side, mode: GenMode, out: &mut MoveListBuf) {
@@ -144,7 +144,7 @@ fn generate(board: &mut Board, side: Side, mode: GenMode, out: &mut MoveListBuf)
     let in_check = checkers != 0;
     let double_check = checkers & checkers.wrapping_sub(1) != 0;
 
-    // generation mode.
+    // generation mode
     let mode_mask = match mode {
         GenMode::All => !friendly,
         GenMode::Captures => enemy_bb,
