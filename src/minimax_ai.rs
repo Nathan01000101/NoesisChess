@@ -303,41 +303,45 @@ fn negamax(
     // NMP
     // If we hand the opponent a free move and are STILL at or > beta, then
     // our real best move is > beta too so why waste resources
-    if null_ok
-        && !in_check
-        && depth >= NULL_MIN_DEPTH
-        && beta.abs() < MATE_THRESHOLD
-        && has_non_pawn_piece(board, side)
-    {
-        if eval_stm(board, side) >= beta {
-            // make null -> flip side to move, drop en passant right
-            let prev_ep = board.en_passant_target;
-            let mut null_hash = hash ^ ztable.black_to_move;
-            if let Some(ep) = prev_ep {
-                null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
-            }
-            board.en_passant_target = None;
-            board.state ^= WHITE_TO_MOVE;
+    if beta - alpha > 1{
+        if null_ok
+            && beta - alpha == 1
+            && !in_check
+            && depth >= NULL_MIN_DEPTH
+            && beta.abs() < MATE_THRESHOLD
+            && has_non_pawn_piece(board, side)
+        {
+            if eval_stm(board, side) >= beta {
+                // make null -> flip side to move, drop en passant right
+                let prev_ep = board.en_passant_target;
+                let mut null_hash = hash ^ ztable.black_to_move;
+                if let Some(ep) = prev_ep {
+                    null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
+                }
+                board.en_passant_target = None;
+                board.state ^= WHITE_TO_MOVE;
 
-            let r = NULL_BASE_REDUCTION + depth / 6;
-            // only care whether it beats beta
-            let score = -negamax(
-                board, null_hash, depth - 1 - r, ply + 1,
-                -beta, -beta + 1, false,
-                ztable, tt, killers, control,
-            );
+                let r = NULL_BASE_REDUCTION + depth / 6;
+                // only care whether it beats beta
+                let score = -negamax(
+                    board, null_hash, depth - 1 - r, ply + 1,
+                    -beta, -beta + 1, false,
+                    ztable, tt, killers, control,
+                );
 
-            // undo null
-            board.state ^= WHITE_TO_MOVE;
-            board.en_passant_target = prev_ep;
+                // undo null
+                board.state ^= WHITE_TO_MOVE;
+                board.en_passant_target = prev_ep;
 
-            if control.aborted { return 0; }
+                if control.aborted { return 0; }
 
-            if score >= beta {
-                return beta;
+                if score >= beta {
+                    return beta;
+                }
             }
         }
     }
+
 
     let mut moves = MoveListBuf::new();
     get_all_moves(board, side, &mut moves);

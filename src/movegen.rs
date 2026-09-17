@@ -299,15 +299,13 @@ pub fn get_valid_moves_standalone(board: &mut Board, square: u8) -> Vec<u8> {
 }
 
 // returns only moves that capture pieces (including en passant) for a single piece
-pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
+pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf, currently_in_check: bool){
     if !board.is_piece(square) { return }
     let piece = get_piece(board, square);
     let mut pseudo: MoveBuf = MoveBuf::new();
     get_pseudo_legal_moves(&board, square, &mut pseudo);
 
     let moving_color = piece.color;
-
-    let currently_in_check = is_in_check(board, moving_color);
     let piece_is_king = piece.piece_type == PieceType::King;
     let pinned_to_king = is_pinned(board, square, moving_color);
 
@@ -338,7 +336,7 @@ pub fn get_capture_moves(board: &mut Board, square: u8, captures: &mut MoveBuf){
     }
 }
 
-pub fn get_quiet_moves(board: &mut Board, square: u8, quiet: &mut MoveBuf){
+pub fn get_quiet_moves(board: &mut Board, square: u8, quiet: &mut MoveBuf, currently_in_check: bool){
     if !board.is_piece(square) { return }
     let piece = get_piece(board, square);
     let mut pseudo: MoveBuf = MoveBuf::new();
@@ -346,7 +344,6 @@ pub fn get_quiet_moves(board: &mut Board, square: u8, quiet: &mut MoveBuf){
 
     let moving_color = piece.color;
 
-    let currently_in_check = is_in_check(board, moving_color);
     let piece_is_king = piece.piece_type == PieceType::King;
     let pinned_to_king = is_pinned(board, square, moving_color);
 
@@ -378,12 +375,13 @@ pub fn get_quiet_moves(board: &mut Board, square: u8, quiet: &mut MoveBuf){
 
 // gets all captures a side can make ((from), (to))
 pub fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf) {
+    let currently_in_check = is_in_check(board, side);
     let mut friendly_pieces = get_side_bitboard(board, side);
     let mut buf = MoveBuf::new();
     while friendly_pieces.0 != 0{
         let bit = friendly_pieces.0.trailing_zeros();
         buf.len = 0;
-        get_capture_moves(board, bit as u8, &mut buf);
+        get_capture_moves(board, bit as u8, &mut buf, currently_in_check);
         for i in 0..buf.len{
             buffer.push(bit as u8, buf.data[i]);
         }
@@ -393,12 +391,13 @@ pub fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf)
 
 // gets all moves for a side that aren't captures
 pub fn get_all_quiets(board: &mut Board, side:Side, buffer: &mut MoveListBuf){
-        let mut friendly_pieces = get_side_bitboard(board, side);
+    let currently_in_check = is_in_check(board, side);
+    let mut friendly_pieces = get_side_bitboard(board, side);
     let mut buf = MoveBuf::new();
     while friendly_pieces.0 != 0{
         let bit = friendly_pieces.0.trailing_zeros();
         buf.len = 0;
-        get_quiet_moves(board, bit as u8, &mut buf);
+        get_quiet_moves(board, bit as u8, &mut buf, currently_in_check);
         for i in 0..buf.len{
             buffer.push(bit as u8, buf.data[i]);
         }
