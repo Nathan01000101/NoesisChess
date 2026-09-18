@@ -10,22 +10,25 @@ const RANK_6: u64 = 0x0000_FF00_0000_0000;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GenMode { All, Captures, Quiets }
 
+// returns the other side, e.g. if white -> ret black
 #[inline]
 fn other(side: Side) -> Side {
     if side == Side::White { Side::Black } else { Side::White }
 }
 
+// returns board's bitboard of the given piecetype
 #[inline]
 fn pieces(board: &Board, side: Side, pt: PieceType) -> u64 {
     board.bitboards[side as usize][pt as usize].0
 }
 
+// returns the side that is next to move
 #[inline]
 fn side_to_move(board: &Board) -> Side {
     if board.state & WHITE_TO_MOVE != 0 { Side::White } else { Side::Black }
 }
 
-
+// returns the bitboard of where possible pawn attacks could be coming from
 #[inline]
 fn pawn_attackers_of(target: u64, by: Side) -> u64 {
     if by == Side::White {
@@ -45,6 +48,8 @@ pub fn attackers_to(board: &Board, square: u8, by: Side, occupied: u64) -> u64 {
         | (get_rook_moves(occupied, square) & (pieces(board, by, PieceType::Rook) | queens))
         | (get_bishop_moves(occupied, square) & (pieces(board, by, PieceType::Bishop) | queens))
 }
+
+// determines if the given square is attacked by the given side
 #[inline]
 fn is_attacked(board: &Board, square: u8, by: Side, occupied: u64) -> bool {
     let t = 1u64 << square;

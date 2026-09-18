@@ -1,95 +1,98 @@
-# Rust Chess Engine
+# Noesis 0.3 Release
 
 **by: Nathan E**
 
-This program allows you to play untimed chess, either with multiple people (locally with another person) or against my AI (~2000 elo) I've created.
+Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~1800** elo.
 
-
-
-## Controls
-- **Click** a piece to select it
-- **Click** a destination to move
-- **F** to flip the board
 
 ## Running the Program
 
-Double-clicking the executable will start a game with you as white and "minimax AI" as black.
+Double-clicking the executable or running without specification will start an instance of the engine, without any GUI. This is intended; if you would wish to use the built in GUI bundled with Noesis please see below.
 
 *read further for CLI usage/examples*
 
-## Custom Matchups & Positions
+##  CLI Specifications
 
 ### Launch program from command line with specification:
-
-	chess_engine --white <white_player> --black <black_player> --depth <depth> --fen <fen_of_position>
-
-**The program can be ran without direct specification of any of the fields above**
-
-Ran without specification, white will always default to human player and black to minimax AI with an automatic depth of 5.
+	Noesis --white <white_player> --black <black_player> --depth <depth> --fen <fen_of_position> --gui
 
 ### Available players:
+
+#### WARNING: the `--gui` flag has to be passed if assigning players, it won't be set automatically
 - `human` - you play with the mouse
 - `minimax` - default AI, searches and evaluates moves and picks the 'best' one
 - `random` - plays a random legal move
 
 ### Depth:
 
-honestly, don't go higher than 5. I've experimented and pushed this default as high as I can go without causing much delay between moves however anything higher than 5 will leave you waiting minutes for a move, anything less than 3 will result in mostly inaccurate gameplay from the AI.
+this field sets the max depth the engine will try to search. The default is 12 and it tends to not reach 12 in most games. The average time to reach a depth of 10 is around 8-10s, if you are looking for faster, less deep searches use this field and use the following for rough reference, keep in mind times **will** vary:
 
-#### Examples:
-- `./chess_engine` 	*This will start the default game, you as white and the AI as black. depth is set to 5*
-- `./chess_engine --white minimax --black minimax ` 	*This will start a game with two AI's*
-- `./chess_engine --white minimax --black minimax --depth 3` 	*This will start a game with two AI's with both depths being set to 3*
-- `./chess_engine --white human --black minimax ` 	*This will start a game with a human playing for white and AI for black*
-- `./chess_engine --fen "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2" ` 	*This will start a game with a human playing white, AI playing black in a sicilian*
+**depth 1-4:** *~1-2ms*
+
+**depth 5-7:** *~10-1000ms*
+
+**depth 8:** *~0.8s-2s*
+
+**depth 9:** *~1s-4s*
+
+**depth 10:** *~5-10s*
+
+**depth 11- :** *~10s-*
+
+
+### Fen Positions
+
+fen position notation is used to store a position of a board as well as the board state, the following is 
+an example of a fen position, specifically the starting position of a chess board:
+
+	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+
+## GUI
+- **Click** a piece to select it
+- **Click** a destination to move
+- **F** to flip the board
+
+#### Examples For Running With GUI:
+- `./Noesis --gui ` 	*This will start a game with a human playing white and Noesis with black*
+- `./Noesis --white minimax --black minimax --gui` 	*This will start a game with two Noesi (plural for Noesis.. according to me)*
+- `./Noesis --white minimax --black minimax --depth 7 --gui` 	*This will start a game with two Noesi with their max depth being set to 7*
+- `./Noesis --fen "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2" --gui` 	*This will start a game with a human playing white, Noesis playing black in a sicilian*
 
 
 ## About the AI
 
-The AI's backbone is it's **minimax algorithm**, used to score moves. The minimax algorithm looks like this in pseudo-code:
+The Engine's backbone is it's **negamax algorithm**, used to score moves. The negamax algorithm looks like this in pseudo-code 
+
+*( with move/board handling omitted for clarity purposes )*:
 
 ```rust
-fn minimax(board_state) -> i32{
+fn negamax(board_state) -> i32{
 	if depth == 0{
 		return evaluate();
 	}
 
-	let eval = 0;
-	if maximizing{
-		let moves = get_all_moves();
-		for mv in moves{
-			make_move();
-			new_eval = minimax(board_state); // this is the recursive part
+	let max_evaluation = -infinity;
 
-			if new_eval > eval{ // did the move we just make improve our position
-				eval = new_eval; // if so, this is the best eval
-			}
+	let moves = get_all_moves();
 
-			undo_move();
-		}
-	}else{
-		let moves = get_all_moves();
-		for mv in moves{
-			make_move();
-			new_eval = minimax(board_state); // this is the recursive part
+	for mv in moves{
+		new_eval = -negamax(board_state); // this is the recursive part
 
-			if new_eval < eval{ // did the move we just make improve our position
-				eval = new_eval; // if so, this is the best eval
-			}
-
-			undo_move();
+		if new_eval > max_evaluation{ // did the move we just make improve our position
+			max_evaluation = new_eval; // if so, this is the best eval
 		}
 	}
-	eval
+	
+	return max_evaluation;
 }
 
 ```
 
 On top of this, I also use **Alpha-Beta Pruning**, which doesn't inherently lead to better moves per se however, it speeds up the search dramatically by reducing the amount of redundant, unfruitful nodes we have to calculate.
 
----
 
-Regarding the evaluation function, It is pretty simple, I keep a table of values for which how good a position is for a piece. 2 tables, one for early-mid game and one for late game for each piece except knights because their positioning stays relatively the same within early-late game.. This is what the pawn table looks like:
+## Board Evaluation
+It is pretty simple, I keep a table of values for which how good a position is for a piece. 2 tables, one for early-mid game and one for late game for each piece except knights because their positioning stays relatively the same within early-late game.. This is what the pawn table looks like:
 
 ```rust
 const PAWN_TABLE: [[i32; 8]; 8] = [
@@ -103,3 +106,6 @@ const PAWN_TABLE: [[i32; 8]; 8] = [
     [ 0,    0,    0,    0,    0,    0,    0,    0   ],  // starting rank
 ];
 ```
+
+## Move Generation
+To be able to achieve a NPS of 10M, you need a well optimized move generation to rely on. Prior to this release, Noesis' move generation relied on ray marching, a slow and costly way to determine if a move can be made or not. On top of that, the previous versions also never did any pre-computing to store move info for a sliding piece like bishops, rook, or queens. Now Noesis can rely on a move generator that pre-computes all possible moves for any sliding piece that already computed every possible combination of pieces that could block its ray, leaving us with the valid moves for all pieces even before the program runs. This leaves the move generator little to do at runtime, maximizing performance.

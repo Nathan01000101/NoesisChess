@@ -1,6 +1,6 @@
 [package]
 name = "Noesis"
-version = "0.2.98"
+version = "0.3"
 edition = "2024"
 
 [dependencies]

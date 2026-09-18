@@ -24,8 +24,8 @@ println!(r#" Thank you for using
 / /\  / (_) |  __/\__ \ \__ \
 \_\ \/ \___/ \___||___/_|___/
 "#);
-println!("\n Engine built by: Nathan E.");
-println!("  Version 0.29-dev 2026-09-14");
+println!("\n Engine developed by: Nathan E.");
+println!(" -- Version 0.3 2026-09-17 --");
     let config = config::Config::from_args();
 
     if !config.gui {

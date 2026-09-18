@@ -61,7 +61,6 @@ impl Player for MinimaxAI {
         if tt_unlock.len() * size_of::<TTEntry>() > MAX_TABLE_SIZE_BYTES {
             tt_unlock.clear();
         }
-        println!(" {:#018x}", self.zobrist.pieces[0][0][0]);
         println!("info hashfull {}", ((tt_unlock.len() as f32 * size_of::<TTEntry>() as f32 / MAX_TABLE_SIZE_BYTES as f32) * 1000.0) as i32);
         drop(tt_unlock);
 
