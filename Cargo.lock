@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Noesis"
-version = "0.2.98"
+version = "0.3.0"
 dependencies = [
  "dashmap",
  "macroquad",
