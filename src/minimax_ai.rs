@@ -61,7 +61,7 @@ impl Player for MinimaxAI {
         if tt_unlock.len() * size_of::<TTEntry>() > MAX_TABLE_SIZE_BYTES {
             tt_unlock.clear();
         }
-
+        println!(" {:#018x}", self.zobrist.pieces[0][0][0]);
         println!("info hashfull {}", ((tt_unlock.len() as f32 * size_of::<TTEntry>() as f32 / MAX_TABLE_SIZE_BYTES as f32) * 1000.0) as i32);
         drop(tt_unlock);
 
@@ -226,7 +226,6 @@ impl SearchControl {
             if self.start.elapsed() >= self.budget {
                 self.aborted = true;
             }
-            println!("info nodes {}",self.nodes);
         }
         self.aborted
     }
@@ -626,31 +625,36 @@ struct ZobristTable {
 
 impl ZobristTable {
     fn new() -> Self {
+
+        // "RNG" but will keep same for determinism tests
+        let mut rng: u64 = 0x0EE5_150E_5150_ABCD;
+
         let mut pieces = [[[0u64; 64]; 2]; 6];
         for pt in 0..6 {
             for color in 0..2 {
                 for sq in 0..64 {
-                    pieces[pt][color][sq] = rand::gen_range(0, u64::MAX);
+                    pieces[pt][color][sq] = splitmix64(&mut rng);
                 }
             }
         }
 
         let mut en_passant_file = [0u64; 8];
         for f in 0..8 {
-            en_passant_file[f] = rand::gen_range(0, u64::MAX);
+            en_passant_file[f] = splitmix64(&mut rng);
         }
 
         let mut castling = [0u64; 4];
         for i in 0..4 {
-            castling[i] = rand::gen_range(0, u64::MAX);
+            castling[i] = splitmix64(&mut rng);
         }
 
         ZobristTable {
             pieces,
-            black_to_move: rand::gen_range(0, u64::MAX),
+            black_to_move: splitmix64(&mut rng),
             en_passant_file,
             castling,
         }
+        
     }
 
     fn hash(&self, board: &Board) -> u64 {
@@ -735,6 +739,16 @@ impl ZobristTable {
         h
     }
 
+}
+
+// 64 bit hashing 
+// hashing is reproducable and deterministic
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 // ALL OF THESE ARE FROM BLACKS PERSPECTIVE
