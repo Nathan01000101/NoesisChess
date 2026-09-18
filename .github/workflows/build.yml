@@ -1,0 +1,28 @@
+name: Release Build
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Noesis.exe
+          - os: macos-latest
+            artifact: Noesis
+          - os: ubuntu-latest
+            artifact: Noesis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noesis-${{ matrix.os }}
+          path: target/release/${{ matrix.artifact }}
