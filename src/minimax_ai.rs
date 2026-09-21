@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::time::{Instant, Duration};
+use crate::attacks::{PAWN_DOUBLED_MASKS, PAWN_ISOLATED_MASKS, PAWN_PASSED_MASKS};
 use crate::types::{Board, PieceType, Piece, Side, Undo, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
 use crate::board::{get_piece, make_move, undo_move, to_fen};
 use crate::movegen::{get_all_moves, get_all_captures, is_in_check};
@@ -26,6 +27,11 @@ const MATE_THRESHOLD: i32 = MATE - 1_000; // |score| above this means "this is a
 // Null move pruning knobs.
 const NULL_MIN_DEPTH: i32 = 3;
 const NULL_BASE_REDUCTION: i32 = 2;
+
+// Pawn structure scoring
+const DOUBLED_PAWN_PENALTY: i32 = -20;
+const ISOLATED_PAWN_PENALTY: i32 = -15;
+const PASSED_PAWN_REWARD: [i32; 6] = [150, 110, 70, 40, 20, 10]; // passed pawns must be pushed! 
 
 pub struct MinimaxAI {
     pub depth: usize,
@@ -167,7 +173,7 @@ impl Player for MinimaxAI {
                 root_scores = paired.iter().map(|p| p.1).collect();
 
                 // UCI info
-                println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), depth_best_score, control.nodes, control.nodes as f32 / start.elapsed().as_secs_f32());
+                println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), if side == Side::White {depth_best_score} else {-depth_best_score}, control.nodes, control.nodes as f32 / start.elapsed().as_secs_f32());
             } else {
                 println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
                 break;
@@ -461,7 +467,7 @@ fn quiescence(
 // white evaluation, made public and unchanged so anything outside the
 // search that calls it still gets what it expects.
 pub fn evaluate(board: &Board) -> i32 {
-    let mut score = 0;
+    let mut eval = 0;
     for color in 0..2 {
         let side = if color == 0 { Side::White } else { Side::Black };
         for pt in 0..6 {
@@ -471,12 +477,48 @@ pub fn evaluate(board: &Board) -> i32 {
             while bb.0 != 0 {
                 let sq = bb.0.trailing_zeros() as u8;
                 let val = piece_value(Piece { piece_type, color: side }, sq, board.moves);
-                score += if side == Side::White { val } else { -val };
+                eval += if side == Side::White { val } else { -val };
                 bb.0 &= bb.0 - 1;
             }
         }
     }
-    score
+    eval += pawn_structure_score(board);
+    eval
+}
+
+pub fn pawn_structure_score(board: &Board) -> i32{
+    let mut eval = 0;
+
+    // iterate over each side
+    for color in 0..2{
+        let pawns = board.bitboards[color][PieceType::Pawn as usize].0;
+        let mut pawns_itr = board.bitboards[color][PieceType::Pawn as usize].0;
+        let enemy_pawns = board.bitboards[if color == 0 {1} else {0}][PieceType::Pawn as usize].0;
+
+        while pawns_itr != 0{
+            let pawn_bit = pawns_itr.trailing_zeros() as usize;
+            //passed pawn check
+            if enemy_pawns & PAWN_PASSED_MASKS[color][pawn_bit] == 0{
+                let rank = pawn_bit / 8;
+                let ranks_to_promo = if color == 0 { 7 - rank } else { rank };
+                let reward = PASSED_PAWN_REWARD[ranks_to_promo.min(5)];
+                if color == 0 {eval += reward} else {eval -= reward};
+            }
+
+            //doubled check
+            if pawns & PAWN_DOUBLED_MASKS[color][pawn_bit] != 0{
+                if color == 0 {eval += DOUBLED_PAWN_PENALTY} else {eval -= DOUBLED_PAWN_PENALTY};
+            }
+
+            // isolated check
+            if pawns & PAWN_ISOLATED_MASKS[pawn_bit] == 0{
+                if color == 0 {eval += ISOLATED_PAWN_PENALTY} else {eval -= ISOLATED_PAWN_PENALTY};
+            }
+            pawns_itr &= pawns_itr - 1;
+        }
+    }
+
+    eval
 }
 
 // negamax needs the score from the point of view of the side to move.
@@ -754,8 +796,8 @@ fn splitmix64(state: &mut u64) -> u64 {
 
 const PAWN_TABLE: [i32; 64] = [
     0,    0,    0,    0,    0,    0,    0,    0   ,  // promotion
-    90,   90,   90,   90,   90,   90,   90,   90  ,
-    25,   25,   50,   55,   55,   50,   25,   25  ,
+    40,   40,   40,   40,   40,   40,   40,   40  ,
+    25,   25,   25,   25,   25,   25,   25,   25  ,
     10,   10,   25,   50,   50,   25,   10,   10  ,
     5,    5,    25,   45,   45,   25,   5,    5   ,
     5,    5,    10,   5,    5,   10,    5,    5   ,
@@ -765,10 +807,10 @@ const PAWN_TABLE: [i32; 64] = [
 
 const PAWN_TABLE_LATE: [i32; 64] = [
     0,    0,    0,    0,    0,    0,    0,    0  ,  // PROMOTE PROMOTE PROMOTE
-    120,  120,  120,  120,  120,  120,  120,  120  ,  //
-    70,   70,   70,   70,   70,   70,   70,   70  ,  //
-    40,   40,   40,   40,   40,   40,   40,   40  ,  //
+    45,  45,  45,  45,  45,  45,  45,  45  ,  //
+    30,   30,   30,   30,   30,   30,   30,   30  ,  //
     25,   25,   25,   25,   25,   25,   25,   25  ,  //
+    20,   20,   20,   20,   20,   20,   20,   20  ,  //
     10,   10,   10,   10,   10,   10,   10,   10  ,  //
     5,    5,    5,    5,    5,    5,    5,    5  ,  //
     0,    0,    0,    0,    0,    0,    0,    0  ,  // starting rank
