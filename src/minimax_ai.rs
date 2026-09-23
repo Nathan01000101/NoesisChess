@@ -7,7 +7,7 @@ use std::time::{Instant, Duration};
 use crate::attacks::{PAWN_DOUBLED_MASKS, PAWN_ISOLATED_MASKS, PAWN_PASSED_MASKS};
 use crate::types::{Board, PieceType, Piece, Side, Undo, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
 use crate::board::{get_piece, make_move, undo_move, to_fen};
-use crate::movegen::{get_all_moves, get_all_captures, is_in_check};
+use crate::movegen::{get_all_captures, get_all_moves, get_move_count, is_in_check};
 
 use crate::ai::Player;
 
@@ -32,6 +32,8 @@ const NULL_BASE_REDUCTION: i32 = 2;
 const DOUBLED_PAWN_PENALTY: i32 = -20;
 const ISOLATED_PAWN_PENALTY: i32 = -15;
 const PASSED_PAWN_REWARD: [i32; 6] = [150, 110, 70, 40, 20, 10]; // passed pawns must be pushed! 
+
+// Mobility scoring
 
 pub struct MinimaxAI {
     pub depth: usize,
@@ -173,7 +175,7 @@ impl Player for MinimaxAI {
                 root_scores = paired.iter().map(|p| p.1).collect();
 
                 // UCI info
-                println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), if side == Side::White {depth_best_score} else {-depth_best_score}, control.nodes, control.nodes as f32 / start.elapsed().as_secs_f32());
+                println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), if side == Side::White {depth_best_score} else {-depth_best_score}, control.nodes, (control.nodes as f32 / start.elapsed().as_secs_f32()) as i32);
             } else {
                 println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
                 break;
@@ -516,6 +518,16 @@ pub fn pawn_structure_score(board: &Board) -> i32{
             }
             pawns_itr &= pawns_itr - 1;
         }
+    }
+
+    eval
+}
+
+fn mobility_score(board: &mut Board) -> i32{
+    let mut eval = 0;
+
+    for color in 0..2{
+        let num_of_moves = get_move_count(board, if color == 0 {Side::White} else {Side::Black});
     }
 
     eval
