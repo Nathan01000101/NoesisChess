@@ -5,7 +5,7 @@ mod attacks;
 mod board;
 mod config;
 mod human;
-mod minimax_ai;
+mod engine;
 mod movegen;
 mod render;
 mod random_ai;

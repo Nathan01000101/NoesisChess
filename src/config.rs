@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::ai::Player;
 use crate::human::HumanPlayer;
 use crate::random_ai::RandomAI;
-use crate::minimax_ai::{MinimaxAI};
+use crate::engine::{MinimaxAI};
 use crate::*;
 
 pub struct Config {

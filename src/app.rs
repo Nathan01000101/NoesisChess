@@ -15,7 +15,7 @@ use crate::config::{self, Config};
 use crate::assets::{self, Assets};
 use crate::human::HumanPlayer;
 use crate::ai::Player;
-use crate::minimax_ai::{self, MinimaxAI};
+use crate::engine::{self, MinimaxAI};
 
 const ENGINE_NAME: &str = "Neosis 0.29";
 const ENGINE_AUTHORS: &str = "Nathan E.";
@@ -144,7 +144,7 @@ pub async fn run(config: Config) {
                         let move_info = make_move(&mut board, from, square);
                         move_history.push(move_info.clone());
                         println!("\nmove {}:", board.moves);
-                        println!("eval: {}", minimax_ai::evaluate(&board));
+                        println!("eval: {}", engine::evaluate(&board));
                         last_move = Some((square, from));
 
                         let is_white = Arc::ptr_eq(current_player, &player1);
@@ -196,7 +196,7 @@ pub async fn run(config: Config) {
                     let move_info = make_move(&mut board, mv.0, mv.1);
                     move_history.push(move_info.clone());
                     println!("move {}:", board.moves);
-                    println!("eval: {}\n", minimax_ai::evaluate(&board));
+                    println!("eval: {}\n", engine::evaluate(&board));
                     last_move = Some(mv);
 
                     let is_white = Arc::ptr_eq(current_player, &player1);
