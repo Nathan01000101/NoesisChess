@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::time::{Instant, Duration};
 
-use crate::types::{Board, PieceType, Side, Undo, BLACK_SHORT, BLACK_LONG, WHITE_SHORT, WHITE_LONG, WHITE_TO_MOVE, MoveListBuf};
+use crate::types::{BLACK_LONG, BLACK_SHORT, Board, MoveContext, MoveListBuf, PieceType, Side, Undo, WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE};
 use crate::board::{get_piece, has_non_pawn_piece, make_move, to_fen, undo_move};
 use crate::movegen::{get_all_captures, get_all_moves, is_in_check};
 use crate::eval::{eval_stm, evaluate, material_value};
@@ -32,7 +32,7 @@ const NULL_BASE_REDUCTION: i32 = 2;
 
 // Mobility scoring
 
-pub struct MinimaxAI {
+pub struct Engine {
     pub depth: usize,
     opening_book: FxHashMap<String, Vec<(u8, u8)>>,
     zobrist: ZobristTable,
@@ -40,7 +40,7 @@ pub struct MinimaxAI {
     pub move_history: Mutex<Vec<u64>>
     }
 
-impl MinimaxAI {
+impl Engine {
     pub fn new(depth: usize) -> Self{
         rand::srand(date::now() as u64);
         Self {
@@ -54,12 +54,17 @@ impl MinimaxAI {
     }
 }
 
-impl Player for MinimaxAI {
+impl Player for Engine {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn get_move(&self, board: &Board, side: Side, time_remaining: std::time::Duration, increment: std::time::Duration) -> (u8,u8) {
+    fn get_move(&self, context: MoveContext) -> (u8,u8) {
         let start = Instant::now();
-        let time_budget = compute_time_budget(time_remaining.as_millis(), increment.as_millis(), board.moves);
+        let side = if context.board.state & WHITE_TO_MOVE != 0 {Side::White} else {Side::Black};
+
+        let clock_remaining = if side == Side::White {context.wtime} else {context.btime};
+        let inc = if side == Side::Black {context.winc} else {context.binc};
+
+        let time_budget = compute_time_budget(clock_remaining.as_millis(), inc.as_millis(), context.board.moves);
 
         // cap transposition table growth
         let mut tt_unlock = self.tt.lock().unwrap();
@@ -70,7 +75,7 @@ impl Player for MinimaxAI {
         drop(tt_unlock);
 
         // before calculating move manually, check if position exists in our opening book
-        let full_fen: String = to_fen(board);
+        let full_fen: String = to_fen(&context.board);
         let parts: Vec<&str> = full_fen.split_whitespace().collect();
         let fen = parts[..4].join(" ");
         if let Some(mvs) = self.opening_book.get(&fen){
@@ -85,8 +90,8 @@ impl Player for MinimaxAI {
 
         let mut mh_guard = self.move_history.lock().unwrap();
 
-        let mut b = board.clone();
-        let root_hash = self.zobrist.hash(board);
+        let mut b = context.board.clone();
+        let root_hash = self.zobrist.hash(&context.board);
 
         let mut killers = [[(0u8,0u8); 2]; 64];
 
@@ -101,7 +106,7 @@ impl Player for MinimaxAI {
 
         // initial root ordering, TT move -> MVV-LVA
         let tt_move = tt.get(&root_hash).map(|entry| entry.best_move);
-        moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(board, mv, tt_move));
+        moves.data[..moves.len].sort_by_key(|mv| mvv_lva_tt(&context.board, mv, tt_move));
 
         let mut root_moves: Vec<(u8, u8)> = (0..moves.len).map(|i| moves.data[i]).collect();
         let mut root_scores: Vec<i32> = vec![-INFINITY; root_moves.len()];

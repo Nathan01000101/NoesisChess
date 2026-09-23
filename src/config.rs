@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::ai::Player;
 use crate::human::HumanPlayer;
 use crate::random_ai::RandomAI;
-use crate::engine::{MinimaxAI};
+use crate::engine::{Engine};
 use crate::*;
 
 pub struct Config {
@@ -63,7 +63,7 @@ pub fn make_player(kind: &str, depth: usize) -> Arc<dyn Player + Send + Sync> {
     match kind {
         "human"   => Arc::new(HumanPlayer),
         "random"  => Arc::new(RandomAI),
-        "minimax" => Arc::new(MinimaxAI::new(depth)),
+        "minimax" => Arc::new(Engine::new(depth)),
         _ => panic!("unknown player type: {kind}"),
     }
 }

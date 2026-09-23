@@ -6,8 +6,9 @@ use std::time::Duration;
 use macroquad::prelude::*;
 use macroquad::audio::play_sound_once;
 
+use crate::engine::Engine;
 use crate::*; 
-use crate::types::{WHITE_TO_MOVE, Board, Undo, PieceType, Piece, Side};
+use crate::types::{Board, MoveContext, Piece, PieceType, Side, Undo, WHITE_TO_MOVE};
 use crate::board::{get_piece, from_fen, new_board, make_move};
 use crate::movegen::{get_move_count, is_in_check, get_valid_moves_standalone};
 use crate::render::{draw_board, draw_moves, draw_pieces};
@@ -15,7 +16,6 @@ use crate::config::{self, Config};
 use crate::assets::{self, Assets};
 use crate::human::HumanPlayer;
 use crate::ai::Player;
-use crate::engine::{self, MinimaxAI};
 
 const ENGINE_NAME: &str = "Neosis 0.29";
 const ENGINE_AUTHORS: &str = "Nathan E.";
@@ -143,8 +143,6 @@ pub async fn run(config: Config) {
                     {
                         let move_info = make_move(&mut board, from, square);
                         move_history.push(move_info.clone());
-                        println!("\nmove {}:", board.moves);
-                        println!("eval: {}", eval::evaluate(&board));
                         last_move = Some((square, from));
 
                         let is_white = Arc::ptr_eq(current_player, &player1);
@@ -179,13 +177,10 @@ pub async fn run(config: Config) {
             // AI
             if thinking.is_none() {
                 let player = Arc::clone(current_player);
-                let board_snapshot = board;
-                let side = if Arc::ptr_eq(current_player, &player1) { Side::White } else { Side::Black };
-                let t = if side == Side::White {wtime} else {btime};
-                let inc = if side == Side::White {winc} else {binc};
+                let context = MoveContext {board: board.clone(), wtime: wtime, btime: btime, winc: winc, binc: binc, moves_to_go: -1};
                 let (tx, rx) = mpsc::channel();
                 thread::spawn(move || {
-                    let mv = player.get_move(&board_snapshot, side, t, inc);
+                    let mv = player.get_move(context);
                     let _ = tx.send(mv);
                 });
                 thinking = Some(rx);
@@ -195,8 +190,6 @@ pub async fn run(config: Config) {
                 if let Ok(mv) = rx.try_recv() {
                     let move_info = make_move(&mut board, mv.0, mv.1);
                     move_history.push(move_info.clone());
-                    println!("move {}:", board.moves);
-                    println!("eval: {}\n", eval::evaluate(&board));
                     last_move = Some(mv);
 
                     let is_white = Arc::ptr_eq(current_player, &player1);
@@ -283,7 +276,7 @@ pub async fn run(config: Config) {
 
 // UCI SUPPORT
 pub fn run_headless(config: Config) {
-    let ai_instance:MinimaxAI = MinimaxAI::new(config.depth);
+    let ai_instance: Engine = Engine::new(config.depth);
     let mut board = new_board();
 
     loop {
@@ -304,7 +297,7 @@ pub fn run_headless(config: Config) {
             "ucinewgame"    => ai_instance.reset(),
             "quit"          => break,
             "position"      => board = handle_uci_position(&parts[1..]),
-            "go"            => {let mv = handle_uci_go(&parts[1..], &board, &ai_instance, if board.state & WHITE_TO_MOVE != 0 {Side::White} else {Side::Black}); make_move(&mut board, mv.0, mv.1);},
+            "go"            => {let mv = handle_uci_go(&parts[1..], &board, &ai_instance); make_move(&mut board, mv.0, mv.1);},
             _ => println!("command not found.")
             
         }
@@ -395,27 +388,27 @@ fn handle_uci_position(tokens: &[&str]) -> Board {
     board
 }
 
-fn handle_uci_go(tokens: &[&str], board: &Board, ai: &MinimaxAI, side: Side) -> (u8, u8) {
+fn handle_uci_go(tokens: &[&str], board: &Board, ai: &Engine) -> (u8, u8) {
     let mut wtime = Duration::from_millis(0);
     let mut btime = Duration::from_millis(0);
     let mut winc = Duration::from_millis(0);
     let mut binc = Duration::from_millis(0);
-
+    let mut moves_to_go = 0;
     let mut i = 0;
     while i < tokens.len() {
         let val = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok());
         match tokens[i] {
-            "wtime" => { if let Some(v) = val { wtime = Duration::from_millis(v); } i += 2; }
-            "btime" => { if let Some(v) = val { btime = Duration::from_millis(v); } i += 2; }
-            "winc"  => { if let Some(v) = val { winc  = Duration::from_millis(v); } i += 2; }
-            "binc"  => { if let Some(v) = val { binc  = Duration::from_millis(v); } i += 2; }
+            "wtime"      => { if let Some(v) = val { wtime = Duration::from_millis(v); } i += 2; }
+            "btime"      => { if let Some(v) = val { btime = Duration::from_millis(v); } i += 2; }
+            "winc"       => { if let Some(v) = val { winc  = Duration::from_millis(v); } i += 2; }
+            "binc"       => { if let Some(v) = val { binc  = Duration::from_millis(v); } i += 2; }
+            "movestogo"  => {if let Some(v) = val {moves_to_go = v} i += 2; }
             _ => { i += 1; } // movetime/depth/infinite not handled yet — ignored, not errored
         }
     }
 
-    let (time_remaining, increment) = if side == Side::White { (wtime, winc) } else { (btime, binc) };
-
-    let mv = ai.get_move(board, side, time_remaining, increment);
+    let context = MoveContext {board: board.clone(), wtime: wtime, btime: btime, winc: winc, binc: binc, moves_to_go: moves_to_go as i32};
+    let mv = ai.get_move(context);
     if board.is_piece(mv.0) && get_piece(board, mv.0).piece_type == PieceType::Pawn && (mv.1 / 8 == 0 || mv.1 / 8 == 7){
         println!("bestmove {}q", (index_move_to_uci(mv.0) + index_move_to_uci(mv.1).as_str()));
     }else{

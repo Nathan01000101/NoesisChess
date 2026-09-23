@@ -1,12 +1,12 @@
 use std::any::Any;
-use crate::types::{Board, Side};
+use crate::types::{MoveContext};
 use crate::ai::Player;
 
 pub struct HumanPlayer;
 impl Player for HumanPlayer {
     fn as_any(&self) -> &dyn Any { self }
 
-    fn get_move(&self, _board: &Board, _side: Side, _time_remaining: std::time::Duration, _increment: std::time::Duration) -> (u8, u8) {
+    fn get_move(&self, _context: MoveContext) -> (u8, u8) {
         todo!();
     }
 

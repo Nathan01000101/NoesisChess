@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 pub const WHITE_SHORT:  u8 = 0b00001;
 pub const WHITE_LONG:   u8 = 0b00010;
 pub const BLACK_SHORT:  u8 = 0b00100;
@@ -108,4 +110,13 @@ pub struct Undo{
     pub captured_piece: Option<Piece>, // what piece occupied the square before moving
     pub previous_en_passant_target: Option<u8>, // stores where the en_passant target was before moving
     pub previous_state: u8
+}
+
+pub struct MoveContext{
+    pub board: Board,
+    pub wtime: Duration,
+    pub btime: Duration,
+    pub winc: Duration,
+    pub binc: Duration,
+    pub moves_to_go: i32
 }
