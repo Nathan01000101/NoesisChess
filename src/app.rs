@@ -144,7 +144,7 @@ pub async fn run(config: Config) {
                         let move_info = make_move(&mut board, from, square);
                         move_history.push(move_info.clone());
                         println!("\nmove {}:", board.moves);
-                        println!("eval: {}", engine::evaluate(&board));
+                        println!("eval: {}", eval::evaluate(&board));
                         last_move = Some((square, from));
 
                         let is_white = Arc::ptr_eq(current_player, &player1);
@@ -196,7 +196,7 @@ pub async fn run(config: Config) {
                     let move_info = make_move(&mut board, mv.0, mv.1);
                     move_history.push(move_info.clone());
                     println!("move {}:", board.moves);
-                    println!("eval: {}\n", engine::evaluate(&board));
+                    println!("eval: {}\n", eval::evaluate(&board));
                     last_move = Some(mv);
 
                     let is_white = Arc::ptr_eq(current_player, &player1);

@@ -312,3 +312,12 @@ pub fn undo_move(board: &mut Board, undo: Undo){
         }
     }
 }
+
+// check if a side has a piece that is not king or pawn
+pub fn has_non_pawn_piece(board: &Board, side: Side) -> bool{
+    if board.bitboards[side as usize][PieceType::Bishop as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Rook as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Knight as usize].0 != 0 {return true;}
+    if board.bitboards[side as usize][PieceType::Queen as usize].0 != 0 {return true;}
+    false
+}

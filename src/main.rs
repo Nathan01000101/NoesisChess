@@ -6,6 +6,7 @@ mod board;
 mod config;
 mod human;
 mod engine;
+mod eval;
 mod movegen;
 mod render;
 mod random_ai;
