@@ -25,8 +25,7 @@ pub fn evaluate(board: &Board) -> i32 {
             }
         }
     }
-    eval += pawn_structure_score(board);
-    eval
+    eval + pawn_structure_score(board)
 }
 
 fn pawn_structure_score(board: &Board) -> i32{

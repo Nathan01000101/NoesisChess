@@ -8,7 +8,7 @@ use std::time::{Instant, Duration};
 use crate::types::{BLACK_LONG, BLACK_SHORT, Board, MoveContext, MoveListBuf, PieceType, Side, Undo, WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE};
 use crate::board::{get_piece, has_non_pawn_piece, make_move, to_fen, undo_move};
 use crate::movegen::{get_all_captures, get_all_moves, is_in_check};
-use crate::eval::{eval_stm, evaluate, material_value};
+use crate::eval::{eval_stm, material_value};
 use crate::ai::Player;
 
 use macroquad::{ prelude::*};
@@ -60,9 +60,6 @@ impl Player for Engine {
     fn get_move(&self, context: MoveContext) -> (u8,u8) {
         let start = Instant::now();
         let side = if context.board.state & WHITE_TO_MOVE != 0 {Side::White} else {Side::Black};
-
-        let clock_remaining = if side == Side::White {context.wtime} else {context.btime};
-        let inc = if side == Side::Black {context.winc} else {context.binc};
 
         let time_budget = compute_time_budget(&context);
 
@@ -118,13 +115,19 @@ impl Player for Engine {
         let mut current_depth: i32 = 1;
 
         loop {
+            // NOTE: with PVS only the first move and re-searched moves get exact
+            // scores. Moves that failed the null-window test store an upper bound.
             let mut iter_scores: Vec<i32> = vec![-INFINITY; root_moves.len()];
             let mut depth_best_move = best_move;
             let mut depth_best_hash = best_hash;
             let mut depth_best_score = -INFINITY;
 
+            // set when a move after the first one is proven better with a
+            // completed full-window search. lets us keep it if we abort.
+            let mut improved_on_first = false;
+
             let mut alpha = -INFINITY;
-            let beta = INFINITY;
+            let beta = INFINITY; // becomes finite once aspiration windows are added
             let mut depth_completed = true;
 
             for i in 0..root_moves.len() {
@@ -132,13 +135,31 @@ impl Player for Engine {
                 let undo = make_move(&mut b, mv.0, mv.1);
                 let child_hash = self.zobrist.update_hash(root_hash, &b, &undo);
 
-                // the child is searched from the opposing point of
-                // view, so flip the window and negate what comes back.
-                let mut score = -negamax(
-                    &mut b, child_hash, current_depth - 1, 1,
-                    -beta, -alpha, true,
-                    &self.zobrist, tt, &mut killers, &mut control,
-                );
+                // PVS: first move (previous best) gets the full window,
+                // every other move is only tested against alpha.
+                let mut score = if i == 0 {
+                    -negamax(
+                        &mut b, child_hash, current_depth - 1, 1,
+                        -beta, -alpha, true,
+                        &self.zobrist, tt, &mut killers, &mut control,
+                    )
+                } else {
+                    -negamax(
+                        &mut b, child_hash, current_depth - 1, 1,
+                        -alpha - 1, -alpha, true,
+                        &self.zobrist, tt, &mut killers, &mut control,
+                    )
+                };
+
+                // move beat alpha in the null window -> get its real score.
+                // decided on the raw score, before the repetition penalty.
+                if i != 0 && !control.aborted && score > alpha && score < beta {
+                    score = -negamax(
+                        &mut b, child_hash, current_depth - 1, 1,
+                        -beta, -alpha, true,
+                        &self.zobrist, tt, &mut killers, &mut control,
+                    );
+                }
 
                 undo_move(&mut b, undo);
 
@@ -146,7 +167,8 @@ impl Player for Engine {
                     depth_completed = false;
                     break;
                 }
-                // check for repetition
+
+                // check for repetition (applied after the final search)
                 if mh_guard.contains(&child_hash) {
                     score -= MOVE_REPETITION_PENALTY;
                 }
@@ -157,6 +179,7 @@ impl Player for Engine {
                     depth_best_score = score;
                     depth_best_move = mv;
                     depth_best_hash = child_hash;
+                    if i != 0 { improved_on_first = true; }
                 }
                 if score > alpha { alpha = score; }
             }
@@ -167,6 +190,7 @@ impl Player for Engine {
                 root_scores = iter_scores;
 
                 // reorder root moves best-first for the next iteration
+                // (sort is stable, so ties keep their previous order)
                 let mut paired: Vec<((u8, u8), i32)> = root_moves
                     .iter()
                     .cloned()
@@ -179,7 +203,15 @@ impl Player for Engine {
                 // UCI info
                 println!("info depth {} time {} score cp {} nodes {} nps {}", current_depth, start.elapsed().as_millis(), if side == Side::White {depth_best_score} else {-depth_best_score}, control.nodes, (control.nodes as f32 / start.elapsed().as_secs_f32()) as i32);
             } else {
-                println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
+                // a later move was fully searched and beat the previous best at
+                // this depth, so it's trustworthy even though the iteration aborted
+                if improved_on_first {
+                    best_move = depth_best_move;
+                    best_hash = depth_best_hash;
+                    println!("depth {} aborted, using improved move from partial search", current_depth);
+                } else {
+                    println!("depth {} aborted, keeping depth {} result", current_depth, current_depth - 1);
+                }
                 break;
             }
 
