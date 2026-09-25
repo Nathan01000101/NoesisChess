@@ -1,4 +1,4 @@
-use crate::types::{PieceType, Side, Board, Piece};
+use crate::types::{PieceType, Side, Board};
 use crate::attacks::{PAWN_DOUBLED_MASKS, PAWN_ISOLATED_MASKS, PAWN_PASSED_MASKS};
 use crate::movegen::get_move_count;
 
@@ -7,24 +7,34 @@ const DOUBLED_PAWN_PENALTY: i32 = -20;
 const ISOLATED_PAWN_PENALTY: i32 = -15;
 const PASSED_PAWN_REWARD: [i32; 6] = [150, 110, 70, 40, 20, 10]; // passed pawns must be pushed! 
 
+static PIECE_ORDER: [PieceType; 6] = [PieceType::King, PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn];
+
 // white evaluation, made public and unchanged so anything outside the
 // search that calls it still gets what it expects.
 pub fn evaluate(board: &Board) -> i32 {
     let mut eval = 0;
-    for color in 0..2 {
-        let side = if color == 0 { Side::White } else { Side::Black };
-        for pt in 0..6 {
-            let piece_type = [PieceType::King, PieceType::Queen, PieceType::Rook,
-                               PieceType::Bishop, PieceType::Knight, PieceType::Pawn][pt];
-            let mut bb = board.bitboards[side as usize][piece_type as usize];
-            while bb.0 != 0 {
-                let sq = bb.0.trailing_zeros() as u8;
-                let val = piece_value(Piece { piece_type, color: side }, sq, board.moves);
-                eval += if side == Side::White { val } else { -val };
-                bb.0 &= bb.0 - 1;
-            }
+    // white
+    for &piece_type in PIECE_ORDER.iter() {
+        let mut bb = board.bitboards[0][piece_type as usize];
+        while bb.0 != 0 {
+            let sq = bb.0.trailing_zeros() as u8;
+            let val = piece_value(piece_type, Side::White, sq, board.moves);
+            eval += val;
+            bb.0 &= bb.0 - 1;
         }
     }
+
+    // black
+    for &piece_type in PIECE_ORDER.iter() {
+        let mut bb = board.bitboards[1][piece_type as usize];
+        while bb.0 != 0 {
+            let sq = bb.0.trailing_zeros() as u8;
+            let val = piece_value(piece_type ,Side::Black, sq, board.moves);
+            eval -= val;
+            bb.0 &= bb.0 - 1;
+        }
+    }
+    
     eval + pawn_structure_score(board)
 }
 
@@ -80,10 +90,10 @@ pub fn eval_stm(board: &Board, side: Side) -> i32 {
     if side == Side::White { white_relative } else { -white_relative }
 }
 
-fn piece_value(piece: Piece, coord: u8, moves: u8) -> i32{
-    let idx = if piece.color == Side::White {63 - coord as usize} else {coord as usize};
+fn piece_value(piece_type: PieceType, color: Side, coord: u8, moves: u8) -> i32{
+    let idx = if color == Side::White {63 - coord as usize} else {coord as usize};
 
-    match piece.piece_type {
+    match piece_type {
         PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[idx]}          else {return 105 + PAWN_TABLE_LATE[idx]},
         PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[idx]}        else {return 275 + KNIGHT_TABLE[idx]},
         PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[idx] }      else {return 350 + BISHOP_TABLE_LATE[idx]},
