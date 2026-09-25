@@ -64,7 +64,7 @@ impl Player for Engine {
         let clock_remaining = if side == Side::White {context.wtime} else {context.btime};
         let inc = if side == Side::Black {context.winc} else {context.binc};
 
-        let time_budget = compute_time_budget(clock_remaining.as_millis(), inc.as_millis(), context.board.moves);
+        let time_budget = compute_time_budget(&context);
 
         // cap transposition table growth
         let mut tt_unlock = self.tt.lock().unwrap();
@@ -194,7 +194,6 @@ impl Player for Engine {
             }
         }
 
-        println!("CHOSE {:?}", best_move);
         println!("thinking took {}ms", start.elapsed().as_millis());
 
         // add our move to our move history
@@ -373,11 +372,30 @@ fn negamax(
         let undo = make_move(board, mv.0, mv.1);
         let child_hash = ztable.update_hash(hash, board, &undo);
 
-        let score = -negamax(
+        let mut score = if i == 0{
+            -negamax(
             board, child_hash, depth - 1, ply + 1,
             -beta, -alpha, true,
             ztable, tt, killers, control,
-        );
+            )
+        }else{
+            -negamax(
+            board, child_hash, depth - 1, ply + 1,
+            -alpha - 1, -alpha, true,
+            ztable, tt, killers, control,
+            )
+        };
+
+        if i != 0 && score > alpha && score < beta{
+            // full search needed
+            if !control.aborted{
+                score = -negamax(
+                    board, child_hash, depth - 1, ply + 1,
+                    -beta, -alpha, true,
+                    ztable, tt, killers, control,
+                )
+            }
+        }
 
         undo_move(board, undo);
         if control.aborted { return 0; }
@@ -503,13 +521,16 @@ fn mvv_lva_tt_killer(board: &Board, mv: &(u8,u8), tt_move: Option<(u8,u8)>, kill
     }
 }
 
-fn compute_time_budget(time_left_ms: u128, increment_ms: u128, moves_played: u8) -> u128 {
+fn compute_time_budget(context: &MoveContext) -> u128 {
     const SAFETY_MARGIN_MS: u128 = 50;   // never spend all time
     const MIN_BUDGET_MS: u128 = 20;      // min time
 
-    let assumed_moves_left: u128 = if moves_played < 40 { 30 } else { 15 };
+    let moves_left: u128 = if context.moves_to_go > 0 {context.moves_to_go as u128} else {if context.board.moves < 40 { 30 } else { 15 }};
+    let is_white = context.board.state & WHITE_TO_MOVE != 0;
 
-    let base = time_left_ms / assumed_moves_left;
+    let time_left_ms = if is_white {context.wtime.as_millis()} else {context.btime.as_millis()};
+    let increment_ms = if is_white {context.winc.as_millis()} else {context.binc.as_millis()};
+    let base = time_left_ms / moves_left;
     let budget = base + increment_ms;
 
     let budget = budget.min(time_left_ms.saturating_sub(SAFETY_MARGIN_MS));

@@ -15,7 +15,7 @@ mod types;
 
 
 const WINDOW_SIZE: f32 = 600.0;
-pub const MAX_DEPTH: usize = 11;
+pub const MAX_DEPTH: usize = 33;
 
 fn main() {
 println!(r#" Thank you for using
@@ -26,7 +26,7 @@ println!(r#" Thank you for using
 \_\ \/ \___/ \___||___/_|___/
 "#);
 println!("\n Engine developed by: Nathan E.");
-println!(" -- Version 0.3 2026-09-17 --");
+println!(" -- Version 0.3.1 2026-09-23 --");
     let config = config::Config::from_args();
 
     if !config.gui {
