@@ -1,6 +1,6 @@
 use crate::types::{Bitboard, Side};
 
-const FILES: [u64; 8] = [
+static FILES: [u64; 8] = [
     0x0101010101010101, // A
     0x0202020202020202, // B
     0x0404040404040404, // C
@@ -11,7 +11,7 @@ const FILES: [u64; 8] = [
     0x8080808080808080, // H
 ];
 
-const RANKS: [u64; 8] = [
+static RANKS: [u64; 8] = [
     0x00000000000000FF, // 1
     0x000000000000FF00, // 2
     0x0000000000FF0000, // 3

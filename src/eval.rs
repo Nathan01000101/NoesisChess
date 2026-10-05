@@ -7,31 +7,111 @@ const DOUBLED_PAWN_PENALTY: i32 = -20;
 const ISOLATED_PAWN_PENALTY: i32 = -15;
 const PASSED_PAWN_REWARD: [i32; 6] = [150, 110, 70, 40, 20, 10]; // passed pawns must be pushed! 
 
-static PIECE_ORDER: [PieceType; 6] = [PieceType::King, PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight, PieceType::Pawn];
+pub const PST_MOVES: usize = 71;
+pub static PST: [[[[i32; 64]; 6]; 2]; PST_MOVES] = build_pst(); // indexed PST[moves][color][piecetype][square]
+const TAPER_SCALE: i32 = 256;
+ 
+
+const fn taper_range(pt: PieceType) -> (usize, usize) {
+    match pt {
+        PieceType::Pawn   => (50, 70), 
+        PieceType::Knight => (45, 65), 
+        PieceType::Bishop => (40, 60), 
+        PieceType::Rook   => (50, 70), 
+        PieceType::Queen  => (12, 24), 
+        PieceType::King   => (30, 50), 
+    }
+}
+
+// king value is 0 here because kings will always cancel out anyways
+const fn early_value(pt: PieceType, idx: usize) -> i32 {
+    match pt {
+        PieceType::Pawn   => 100 + PAWN_TABLE[idx],
+        PieceType::Knight => 305 + KNIGHT_TABLE[idx],
+        PieceType::Bishop => 333 + BISHOP_TABLE[idx],
+        PieceType::Rook   => 563 + ROOK_TABLE[idx],
+        PieceType::Queen  => 950 + QUEEN_TABLE_EARLY[idx],
+        PieceType::King   =>   0 + KING_TABLE_EARLY[idx],
+    }
+}
+ 
+const fn late_value(pt: PieceType, idx: usize) -> i32 {
+    match pt {
+        PieceType::Pawn   => 105 + PAWN_TABLE_LATE[idx],
+        PieceType::Knight => 275 + KNIGHT_TABLE[idx],
+        PieceType::Bishop => 350 + BISHOP_TABLE_LATE[idx],
+        PieceType::Rook   => 570 + ROOK_TABLE_LATE[idx],
+        PieceType::Queen  => 950 + QUEEN_TABLE_LATE[idx],
+        PieceType::King   =>   0 + KING_TABLE_LATE[idx],
+    }
+}
+ 
+const fn table_index(color: usize, sq: usize) -> usize {
+    if color == Side::White as usize { sq ^ 56 } else { sq }
+}
+ 
+const fn build_pst() -> [[[[i32; 64]; 6]; 2]; PST_MOVES] {
+    const PIECES: [PieceType; 6] = [
+        PieceType::Pawn, PieceType::Knight, PieceType::Bishop,
+        PieceType::Rook, PieceType::Queen,  PieceType::King,
+    ];
+ 
+    let mut table = [[[[0i32; 64]; 6]; 2]; PST_MOVES];
+ 
+    let mut p = 0;
+    while p < 6 {
+        let pt = PIECES[p];
+        let (start, end) = taper_range(pt);
+        assert!(end < PST_MOVES, "PST_MOVES must be greater than every taper end");
+ 
+        let mut m = 0;
+        while m < PST_MOVES {
+            // weight of the late values at this move number
+            let w = if m <= start {
+                0
+            } else if m >= end {
+                TAPER_SCALE
+            } else {
+                ((m - start) as i32 * TAPER_SCALE) / (end - start) as i32
+            };
+ 
+            let mut color = 0;
+            while color < 2 {
+                let mut sq = 0;
+                while sq < 64 {
+                    let idx = table_index(color, sq);
+                    let v = (early_value(pt, idx) * (TAPER_SCALE - w)
+                           + late_value(pt, idx) * w) / TAPER_SCALE;
+ 
+                    table[m][color][pt as usize][sq] =
+                        if color == Side::White as usize { v } else { -v };
+                    sq += 1;
+                }
+                color += 1;
+            }
+            m += 1;
+        }
+        p += 1;
+    }
+ 
+    table
+}
+
 
 // white evaluation, made public and unchanged so anything outside the
 // search that calls it still gets what it expects.
 pub fn evaluate(board: &Board) -> i32 {
     let mut eval = 0;
-    // white
-    for &piece_type in PIECE_ORDER.iter() {
-        let mut bb = board.bitboards[0][piece_type as usize];
-        while bb.0 != 0 {
-            let sq = bb.0.trailing_zeros() as u8;
-            let val = piece_value(piece_type, Side::White, sq, board.moves);
-            eval += val;
-            bb.0 &= bb.0 - 1;
-        }
-    }
+    let pst = &PST[(board.moves as usize).min(PST_MOVES - 1)]; 
 
-    // black
-    for &piece_type in PIECE_ORDER.iter() {
-        let mut bb = board.bitboards[1][piece_type as usize];
-        while bb.0 != 0 {
-            let sq = bb.0.trailing_zeros() as u8;
-            let val = piece_value(piece_type ,Side::Black, sq, board.moves);
-            eval -= val;
-            bb.0 &= bb.0 - 1;
+    for color in 0..2{
+        for pt in 0..6 {
+            let mut bb = board.bitboards[color][pt];
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                eval += pst[color][pt][sq];
+                bb.0 &= bb.0 - 1;
+            }
         }
     }
     
@@ -90,18 +170,6 @@ pub fn eval_stm(board: &Board, side: Side) -> i32 {
     if side == Side::White { white_relative } else { -white_relative }
 }
 
-fn piece_value(piece_type: PieceType, color: Side, coord: u8, moves: u8) -> i32{
-    let idx = if color == Side::White {63 - coord as usize} else {coord as usize};
-
-    match piece_type {
-        PieceType::Pawn   => if moves < 60 {return 100 + PAWN_TABLE[idx]}          else {return 105 + PAWN_TABLE_LATE[idx]},
-        PieceType::Knight => if moves < 55 {return 305 + KNIGHT_TABLE[idx]}        else {return 275 + KNIGHT_TABLE[idx]},
-        PieceType::Bishop => if moves < 50 { return 333 + BISHOP_TABLE[idx] }      else {return 350 + BISHOP_TABLE_LATE[idx]},
-        PieceType::Rook   => if moves < 60 {return 563 + ROOK_TABLE[idx]}          else {return 570 + ROOK_TABLE_LATE[idx]},
-        PieceType::Queen  => if moves < 18 {return 950 + QUEEN_TABLE_EARLY[idx]}   else {return 950 + QUEEN_TABLE_LATE[idx]},
-        PieceType::King   => if moves < 40 {return 100000 + KING_TABLE_EARLY[idx]} else {return 100000 + KING_TABLE_LATE[idx] },
-    };
-}
 
 pub fn material_value(p_type: PieceType) -> i32{
     match p_type {

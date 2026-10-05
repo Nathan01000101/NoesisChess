@@ -1,16 +1,16 @@
-use std::any::Any;
-use crate::types::{MoveContext};
 use crate::ai::Player;
+use crate::types::{Move, MoveContext};
+use std::any::Any;
 
 pub struct HumanPlayer;
 impl Player for HumanPlayer {
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn get_move(&self, _context: MoveContext) -> (u8, u8) {
+    fn get_move(&self, _context: MoveContext) -> Move {
         todo!();
     }
 
-    fn reset(&self) {
-        
-    }
+    fn reset(&self) {}
 }
