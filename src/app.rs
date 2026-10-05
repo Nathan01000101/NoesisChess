@@ -456,77 +456,28 @@ pub fn index_move_to_uci(square: u8) -> String {
     return format!("{}{}", column_char, r + 1);
 }
 
-fn parse_uci_move(board: &Board, string: &str) -> Move {
-    let mut mv = Move::NULL;
-    let mut chars: [char; 5] = ['\0'; 5];
-    for (i, c) in string.chars().enumerate() {
-        if i < chars.len() {
-            chars[i] = c;
+fn parse_uci_move(board: &mut Board, s: &str) -> Option<Move> {
+    let b = s.as_bytes();
+    if b.len() < 4 {
+        return None;
+    }
+    let sq = |f: u8, r: u8| -> Option<u8> {
+        if !(b'a'..=b'h').contains(&f) || !(b'1'..=b'8').contains(&r) {
+            return None;
         }
-    }
-    let fc_c = chars[0];
-    let fr_c = chars[1];
-    let tc_c = chars[2];
-    let tr_c = chars[3];
-    let is_promo = chars[4] != '\0';
-    if is_promo {
-        let promo_flag: u8 = match chars[4] {
-            'q' => types::PROMOTION_QUEEN,
-            'r' => types::PROMOTION_ROOK,
-            'b' => types::PROMOTION_BISHOP,
-            'n' => types::PROMOTION_KNIGHT,
-            _ => unreachable!(),
-        };
-        mv.set_flags(promo_flag | types::PROMOTION_MOVE);
-    }
-
-    let fc = match fc_c {
-        'a' => 0,
-        'b' => 1,
-        'c' => 2,
-        'd' => 3,
-        'e' => 4,
-        'f' => 5,
-        'g' => 6,
-        'h' => 7,
-        _ => panic!("could not parse column"),
+        Some((r - b'1') * 8 + (f - b'a'))
     };
-    let fr = fr_c.to_digit(10).expect("expected num") - 1;
-
-    mv.set_from((fr * 8 + fc) as u8);
-
-    let tc = match tc_c {
-        'a' => 0,
-        'b' => 1,
-        'c' => 2,
-        'd' => 3,
-        'e' => 4,
-        'f' => 5,
-        'g' => 6,
-        'h' => 7,
-        _ => panic!("could not parse column"),
+    let from = sq(b[0], b[1])?;
+    let to = sq(b[2], b[3])?;
+    let promo = match b.get(4) {
+        Some(b'q') => Some(PieceType::Queen),
+        Some(b'r') => Some(PieceType::Rook),
+        Some(b'b') => Some(PieceType::Bishop),
+        Some(b'n') => Some(PieceType::Knight),
+        _ => None,
     };
-    let tr = tr_c.to_digit(10).expect("expected num") - 1;
-
-    mv.set_to((tr * 8 + tc) as u8);
-
-    let p: Piece = get_piece(board, (fr * 8 + fc) as u8);
-    if let Some(target) = board.en_passant_target {
-        if p.piece_type == PieceType::Pawn {
-            if (tr * 8 + tc) as u8 == target {
-                mv.set_flags(EN_PASSANT_MOVE);
-            }
-        }
-    }
-    if p.piece_type == PieceType::King {
-        if (tc as i16 - fc as i16).abs() == 2 {
-            mv.set_flags(CASTLE_MOVE);
-        }
-    }
-
-    mv
+    find_legal_move(board, from, to, promo)
 }
-
 fn handle_uci_position(tokens: &[&str]) -> Board {
     let mut board;
     let mut idx;
@@ -545,8 +496,8 @@ fn handle_uci_position(tokens: &[&str]) -> Board {
     if idx < tokens.len() && tokens[idx] == "moves" {
         idx += 1;
         for mv_str in &tokens[idx..] {
-            let mv = parse_uci_move(&board, mv_str);
-            make_move(&mut board, mv);
+            let mv = parse_uci_move(&mut board, mv_str);
+            make_move(&mut board, mv.unwrap());
         }
     }
 

@@ -22,7 +22,7 @@ use macroquad::miniquad::date;
 use macroquad::prelude::*;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
-const MAX_TABLE_SIZE_BYTES: usize = 1_073_741_824; // 1gb
+const TT_SIZE_MB: usize = 256; // rounded down to a power of two worth of buckets
 const NODES_PER_TIME_CHECK: u64 = 0x7FF; // check clock every 2048 nodes
 
 const INFINITY: i32 = 1_000_000;
@@ -39,7 +39,7 @@ pub struct Engine {
     pub depth: usize,
     opening_book: FxHashMap<String, Vec<(u8, u8)>>,
     zobrist: ZobristTable,
-    tt: Mutex<FxHashMap<u64, TTEntry>>,
+    tt: Mutex<TranspositionTable>,
     pub move_history: Mutex<Vec<u64>>,
 }
 
@@ -50,7 +50,7 @@ impl Engine {
             depth,
             opening_book: build_book(),
             zobrist: ZobristTable::new(),
-            tt: Mutex::new(FxHashMap::default()),
+            tt: Mutex::new(TranspositionTable::new(TT_SIZE_MB)),
             move_history: Mutex::new(Vec::new()),
         }
     }
@@ -72,18 +72,6 @@ impl Player for Engine {
 
         let time_budget = compute_time_budget(&context);
 
-        // cap transposition table growth
-        let mut tt_unlock = self.tt.lock().unwrap();
-        if tt_unlock.len() * size_of::<TTEntry>() > MAX_TABLE_SIZE_BYTES {
-            tt_unlock.clear();
-        }
-        println!(
-            "info hashfull {}",
-            ((tt_unlock.len() as f32 * size_of::<TTEntry>() as f32 / MAX_TABLE_SIZE_BYTES as f32)
-                * 1000.0) as i32
-        );
-        drop(tt_unlock);
-
         // before calculating move manually, check if position exists in our opening book
         let full_fen: String = to_fen(&context.board);
         let parts: Vec<&str> = full_fen.split_whitespace().collect();
@@ -100,7 +88,10 @@ impl Player for Engine {
         }
 
         let mut tt_guard = self.tt.lock().unwrap();
-        let tt: &mut FxHashMap<u64, TTEntry> = &mut *tt_guard;
+        let tt: &mut TranspositionTable = &mut *tt_guard;
+
+        // new search -> entries from older searches start aging out
+        tt.new_search();
 
         let mut mh_guard = self.move_history.lock().unwrap();
 
@@ -117,7 +108,10 @@ impl Player for Engine {
 
         // initial root ordering, MVV-LVA-TT, killers aren't populated so don't need to consider them
         let mut killers = [[Move::NULL; 2]; 64];
-        let tt_move = tt.get(&root_hash).map(|entry| entry.best_move);
+        let tt_move = tt
+            .probe(root_hash)
+            .map(|entry| entry.best_move)
+            .filter(|m| *m != Move::NULL);
         let mut move_scores = [0; 218];
         score_moves_mvv_lva_tt(&b, &moves, &mut move_scores, tt_move);
 
@@ -241,12 +235,13 @@ impl Player for Engine {
 
                 // UCI info
                 println!(
-                    "info depth {} time {} score cp {} nodes {} nps {}",
+                    "info depth {} time {} score cp {} nodes {} nps {} hashfull {}",
                     current_depth,
                     start.elapsed().as_millis(),
                     depth_best_score,
                     control.nodes,
-                    (control.nodes as f32 / start.elapsed().as_secs_f32()) as i32
+                    (control.nodes as f32 / start.elapsed().as_secs_f32()) as i32,
+                    tt.hashfull()
                 );
             } else {
                 // a later move was fully searched and beat the previous best at
@@ -285,7 +280,6 @@ impl Player for Engine {
         );
 
         // add our move to our move history
-        make_move(&mut b, best_move);
         mh_guard.push(best_hash);
 
         best_move
@@ -293,6 +287,7 @@ impl Player for Engine {
 
     fn reset(&self) {
         self.move_history.lock().unwrap().clear();
+        self.tt.lock().unwrap().clear();
     }
 }
 
@@ -369,7 +364,7 @@ fn negamax(
     mut beta: i32,
     null_ok: bool,
     ztable: &ZobristTable,
-    tt: &mut FxHashMap<u64, TTEntry>,
+    tt: &mut TranspositionTable,
     killers: &mut [[Move; 2]; 64],
     control: &mut SearchControl,
 ) -> i32 {
@@ -385,11 +380,13 @@ fn negamax(
 
     // only trust an entry searched at least as deep as we need.
     let mut tt_move: Option<Move> = None;
-    if let Some(entry) = tt.get(&hash) {
-        tt_move = Some(entry.best_move);
-        if entry.depth >= depth {
+    if let Some(entry) = tt.probe(hash) {
+        if entry.best_move != Move::NULL {
+            tt_move = Some(entry.best_move);
+        }
+        if entry.depth as i32 >= depth {
             let value = score_from_tt(entry.value, ply);
-            match entry.bound {
+            match entry.bound() {
                 Bound::Exact => return value,
                 Bound::Lower => alpha = alpha.max(value),
                 Bound::Upper => beta = beta.min(value),
@@ -580,21 +577,9 @@ fn negamax(
     } else {
         Bound::Exact
     };
-    let should_insert = match tt.get(&hash) {
-        Some(entry) => depth >= entry.depth,
-        None => true,
-    };
-    if should_insert {
-        tt.insert(
-            hash,
-            TTEntry {
-                depth,
-                value: score_to_tt(best, ply),
-                bound,
-                best_move,
-            },
-        );
-    }
+
+    // replacement policy lives inside store()
+    tt.store(hash, depth, score_to_tt(best, ply), bound, best_move);
 
     best
 }
@@ -861,19 +846,192 @@ fn square_to_coord(sq: &str) -> (u8, u8) {
     (row, col)
 }
 
-#[derive(Clone, Copy)]
+// Fixed size, Each bucket is a 64-byte cache line
+// each holding 4 entries
+// ---------------------------------------------------------------------------
+
+const BUCKET_SIZE: usize = 4;
+const BOUND_MASK: u8 = 0b11; // flags bits 0-1: bound (0 means empty slot)
+const GEN_SHIFT: u8 = 2; // flags bits 2-7: search generation
+const GEN_MASK: u8 = 0x3F;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Exact,
     Lower,
     Upper,
 }
 
+impl Bound {
+    #[inline]
+    fn to_bits(self) -> u8 {
+        match self {
+            Bound::Exact => 1,
+            Bound::Lower => 2,
+            Bound::Upper => 3,
+        }
+    }
+
+    #[inline]
+    fn from_bits(bits: u8) -> Bound {
+        match bits {
+            1 => Bound::Exact,
+            2 => Bound::Lower,
+            _ => Bound::Upper,
+        }
+    }
+}
+
+// 16 bytes: 8 + 4 + 2 + 1 + 1
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct TTEntry {
-    depth: i32,
+    key: u64, // full zobrist hash, used to verify the slot really is this position
     value: i32,
-    bound: Bound,
     best_move: Move,
+    depth: i8,
+    flags: u8, // bound | generation << 2
+}
+
+impl TTEntry {
+    const EMPTY: TTEntry = TTEntry {
+        key: 0,
+        value: 0,
+        best_move: Move::NULL,
+        depth: 0,
+        flags: 0,
+    };
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.flags & BOUND_MASK == 0
+    }
+
+    #[inline]
+    fn bound(&self) -> Bound {
+        Bound::from_bits(self.flags & BOUND_MASK)
+    }
+
+    #[inline]
+    fn generation(&self) -> u8 {
+        self.flags >> GEN_SHIFT
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+struct Bucket {
+    entries: [TTEntry; BUCKET_SIZE],
+}
+
+impl Bucket {
+    const EMPTY: Bucket = Bucket {
+        entries: [TTEntry::EMPTY; BUCKET_SIZE],
+    };
+}
+
+struct TranspositionTable {
+    buckets: Vec<Bucket>,
+    mask: usize,
+    generation: u8,
+}
+
+impl TranspositionTable {
+    fn new(size_mb: usize) -> Self {
+        let bytes = size_mb * 1024 * 1024;
+        let wanted = (bytes / std::mem::size_of::<Bucket>()).max(1);
+        // power of two bucket count so the index is just `hash & mask`
+        let count = if wanted.is_power_of_two() {
+            wanted
+        } else {
+            wanted.next_power_of_two() / 2
+        };
+
+        Self {
+            buckets: vec![Bucket::EMPTY; count],
+            mask: count - 1,
+            generation: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buckets.fill(Bucket::EMPTY);
+        self.generation = 0;
+    }
+
+    // call once at the start of every search so old entries can be told apart
+    fn new_search(&mut self) {
+        self.generation = (self.generation + 1) & GEN_MASK;
+    }
+
+    #[inline]
+    fn index(&self, hash: u64) -> usize {
+        (hash as usize) & self.mask
+    }
+
+    #[inline]
+    fn probe(&self, hash: u64) -> Option<TTEntry> {
+        self.buckets[self.index(hash)]
+            .entries
+            .iter()
+            .find(|e| !e.is_empty() && e.key == hash)
+            .copied()
+    }
+
+    fn store(&mut self, hash: u64, depth: i32, value: i32, bound: Bound, best_move: Move) {
+        let cur_gen = self.generation;
+        let idx = self.index(hash);
+        let bucket = &mut self.buckets[idx];
+        let depth8 = depth.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+
+        // pick a slot: same position > empty > least valuable
+        // (value = depth, minus a penalty for every search it has sat unused)
+        let mut victim = 0;
+        let mut victim_worth = i32::MAX;
+        for (i, e) in bucket.entries.iter().enumerate() {
+            if !e.is_empty() && e.key == hash {
+                // same position: keep the old entry if it's deeper and from this search
+                if depth8 < e.depth && e.generation() == cur_gen {
+                    return;
+                }
+                victim = i;
+                break;
+            }
+            if e.is_empty() {
+                victim = i;
+                victim_worth = i32::MIN;
+                continue;
+            }
+            let age = (cur_gen.wrapping_sub(e.generation()) & GEN_MASK) as i32;
+            let worth = e.depth as i32 - 8 * age;
+            if worth < victim_worth {
+                victim_worth = worth;
+                victim = i;
+            }
+        }
+
+        bucket.entries[victim] = TTEntry {
+            key: hash,
+            value,
+            best_move,
+            depth: depth8,
+            flags: (cur_gen << GEN_SHIFT) | bound.to_bits(),
+        };
+    }
+
+    // UCI hashfull print
+    fn hashfull(&self) -> usize {
+        let sample = self.buckets.len().min(250);
+        let mut used = 0;
+        for bucket in &self.buckets[..sample] {
+            for e in &bucket.entries {
+                if !e.is_empty() && e.generation() == self.generation {
+                    used += 1;
+                }
+            }
+        }
+        used * 1000 / (sample * BUCKET_SIZE)
+    }
 }
 
 struct ZobristTable {
