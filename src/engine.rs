@@ -12,11 +12,11 @@ use crate::board::{
 };
 use crate::eval::{eval_stm, material_value};
 use crate::movegen::{find_legal_move, get_all_captures, get_all_moves, is_in_check};
+use crate::types;
 use crate::types::{
-    BLACK_LONG, BLACK_SHORT, Board, Move, MoveContext, MoveListBuf, Piece, PieceType, Side, Undo,
-    WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE,
+    BLACK_LONG, BLACK_SHORT, Board, EN_PASSANT_MOVE, Move, MoveContext, MoveListBuf,
+    PROMOTION_MOVE, PieceType, Side, Undo, WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE,
 };
-use crate::{app, types};
 
 use macroquad::miniquad::date;
 use macroquad::prelude::*;
@@ -25,7 +25,7 @@ const MOVE_REPETITION_PENALTY: i32 = 25;
 const TT_SIZE_MB: usize = 256; // rounded down to a power of two worth of buckets
 const NODES_PER_TIME_CHECK: u64 = 0x7FF; // check clock every 2048 nodes
 
-const INFINITY: i32 = 1_000_000;
+const INFINITY: i32 = 10_000_000;
 const MATE: i32 = 500_000;
 const MATE_THRESHOLD: i32 = MATE - 1_000; // |score| above this means "this is a mate score"
 
@@ -33,7 +33,10 @@ const MATE_THRESHOLD: i32 = MATE - 1_000; // |score| above this means "this is a
 const NULL_MIN_DEPTH: i32 = 3;
 const NULL_BASE_REDUCTION: i32 = 2;
 
-// Mobility scoring
+const MAX_HISTORY: i32 = 16000;
+
+const LMR_MIN_DEPTH: i32 = 3;
+const LMR_MIN_MOVES: usize = 3;
 
 pub struct Engine {
     pub depth: usize,
@@ -108,6 +111,7 @@ impl Player for Engine {
 
         // initial root ordering, MVV-LVA-TT, killers aren't populated so don't need to consider them
         let mut killers = [[Move::NULL; 2]; 64];
+        let mut history = [[[0i32; 64]; 64]; 2];
         let tt_move = tt
             .probe(root_hash)
             .map(|entry| entry.best_move)
@@ -166,6 +170,7 @@ impl Player for Engine {
                         &self.zobrist,
                         tt,
                         &mut killers,
+                        &mut history,
                         &mut control,
                     )
                 } else {
@@ -180,6 +185,7 @@ impl Player for Engine {
                         &self.zobrist,
                         tt,
                         &mut killers,
+                        &mut history,
                         &mut control,
                     )
                 };
@@ -198,6 +204,7 @@ impl Player for Engine {
                         &self.zobrist,
                         tt,
                         &mut killers,
+                        &mut history,
                         &mut control,
                     );
                 }
@@ -209,7 +216,7 @@ impl Player for Engine {
                     break;
                 }
 
-                // check for repetition (applied after the final search)
+                // check for repetition
                 if mh_guard.contains(&child_hash) {
                     score -= MOVE_REPETITION_PENALTY;
                 }
@@ -296,15 +303,23 @@ struct SearchControl {
     budget: Duration,
     nodes: u64,
     aborted: bool,
+    lmr: [[i32; 64]; 64],
 }
 
 impl SearchControl {
     fn new(start: Instant, budget_ms: u128) -> Self {
+        let mut lmr = [[0; 64]; 64];
+        for d in 1..64 {
+            for m in 1..64 {
+                lmr[d][m] = (0.75 + (d as f64).ln() * (m as f64).ln() / 2.25) as i32;
+            }
+        }
         Self {
             start,
             budget: Duration::from_millis(budget_ms as u64),
             nodes: 0,
             aborted: false,
+            lmr,
         }
     }
 
@@ -322,6 +337,10 @@ impl SearchControl {
         }
         self.aborted
     }
+}
+
+fn update_history(entry: &mut i32, bonus: i32) {
+    *entry += bonus - *entry * bonus.abs() / MAX_HISTORY;
 }
 
 #[inline]
@@ -346,15 +365,6 @@ fn score_from_tt(value: i32, ply: i32) -> i32 {
     }
 }
 
-// board   -> current node state
-// hash    -> current hash state
-// depth   -> plies left (may go negative via reductions; <= 0 drops to quiescence)
-// ply     -> plies searched so far
-// alpha   -> best score the side to move is already guaranteed
-// beta    -> score at which the opponent stops considering this line
-// null_ok -> may we try a null move here (false directly under a null move)
-//
-// Everything is from the point of view of the side to move.
 fn negamax(
     board: &mut Board,
     hash: u64,
@@ -366,6 +376,7 @@ fn negamax(
     ztable: &ZobristTable,
     tt: &mut TranspositionTable,
     killers: &mut [[Move; 2]; 64],
+    history: &mut [[[i32; 64]; 64]; 2],
     control: &mut SearchControl,
 ) -> i32 {
     if control.poll() {
@@ -376,6 +387,11 @@ fn negamax(
         Side::White
     } else {
         Side::Black
+    };
+    let opponent = if side == Side::White {
+        Side::Black
+    } else {
+        Side::White
     };
 
     // only trust an entry searched at least as deep as we need.
@@ -400,62 +416,57 @@ fn negamax(
     // window we actually search with, for classifying the bound on store
     let alpha_orig = alpha;
     let beta_orig = beta;
+    let pv_node = beta - alpha > 1;
 
-    // if we have reached max depth, return base value, but make sure we don't
-    // fall for horizon effect
     if depth <= 0 {
         return quiescence(board, ply, alpha, beta, control);
     }
 
     let in_check = is_in_check(board, side);
 
-    // Null Move Prunning
-    // If we hand the opponent a free move and are STILL at or > beta, then
-    // our real best move is > beta too so why waste resources
+    // Null move pruning: non-PV nodes only
     if null_ok
-        && beta - alpha == 1
+        && !pv_node
         && !in_check
         && depth >= NULL_MIN_DEPTH
         && beta.abs() < MATE_THRESHOLD
         && has_non_pawn_piece(board, side)
+        && eval_stm(board, side) >= beta
     {
-        if eval_stm(board, side) >= beta {
-            // make null -> flip side to move, drop en passant right
-            let prev_ep = board.en_passant_target;
-            let mut null_hash = hash ^ ztable.black_to_move;
-            if let Some(ep) = prev_ep {
-                null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
-            }
-            board.en_passant_target = None;
-            board.state ^= WHITE_TO_MOVE;
+        // make null -> flip side to move, drop en passant right
+        let prev_ep = board.en_passant_target;
+        let mut null_hash = hash ^ ztable.black_to_move;
+        if let Some(ep) = prev_ep {
+            null_hash ^= ztable.en_passant_file[(ep % 8) as usize];
+        }
+        board.en_passant_target = None;
+        board.state ^= WHITE_TO_MOVE;
 
-            let r = NULL_BASE_REDUCTION + depth / 6;
-            // only care whether it beats beta
-            let score = -negamax(
-                board,
-                null_hash,
-                depth - 1 - r,
-                ply + 1,
-                -beta,
-                -beta + 1,
-                false,
-                ztable,
-                tt,
-                killers,
-                control,
-            );
+        let r = NULL_BASE_REDUCTION + depth / 6;
+        let score = -negamax(
+            board,
+            null_hash,
+            depth - 1 - r,
+            ply + 1,
+            -beta,
+            -beta + 1,
+            false,
+            ztable,
+            tt,
+            killers,
+            history,
+            control,
+        );
 
-            // undo null
-            board.state ^= WHITE_TO_MOVE;
-            board.en_passant_target = prev_ep;
+        // undo null
+        board.state ^= WHITE_TO_MOVE;
+        board.en_passant_target = prev_ep;
 
-            if control.aborted {
-                return 0;
-            }
-
-            if score >= beta {
-                return beta;
-            }
+        if control.aborted {
+            return 0;
+        }
+        if score >= beta {
+            return beta;
         }
     }
 
@@ -463,13 +474,15 @@ fn negamax(
     let mut move_scores = [0; 218];
     get_all_moves(board, side, &mut moves);
 
-    // mate / stalemate check, before we touch moves.data
+    // mate / stalemate
     if moves.len == 0 {
         return if in_check { -MATE + ply } else { 0 };
     }
 
-    // move value ordering + TT ordering + killer ordering
-    // victim value * 10 + (6 - attacker value)
+    // for history
+    let mut quiets_tried = [Move::NULL; 64];
+    let mut n_quiets = 0;
+
     let p = ply as usize;
     let this_ply_killers = if p < killers.len() {
         killers[p]
@@ -482,6 +495,7 @@ fn negamax(
         &mut move_scores,
         tt_move,
         this_ply_killers,
+        history,
     );
 
     let mut best_move: Move = moves.data[0];
@@ -493,14 +507,26 @@ fn negamax(
             moves_sorted = bubble_pass(&mut moves, &mut move_scores, i, stop_sort_at);
         }
         let mv = moves.data[i];
+
+        // classify on the pre-move board
+        let move_type = mv.get_flags() & 0b11;
+        let quiet = !board.is_piece(mv.get_to())
+            && move_type != PROMOTION_MOVE
+            && move_type != EN_PASSANT_MOVE;
+        let is_killer = mv == this_ply_killers[0] || mv == this_ply_killers[1];
+
         let undo = make_move(board, mv);
         let child_hash = ztable.update_hash(hash, board, mv, &undo);
+        let gives_check = is_in_check(board, opponent);
+        let new_depth = depth - 1;
 
-        let mut score = if i == 0 {
-            -negamax(
+        let mut score;
+        if i == 0 {
+            // first move: full window, full depth
+            score = -negamax(
                 board,
                 child_hash,
-                depth - 1,
+                new_depth,
                 ply + 1,
                 -beta,
                 -alpha,
@@ -508,13 +534,32 @@ fn negamax(
                 ztable,
                 tt,
                 killers,
+                history,
                 control,
-            )
+            );
         } else {
-            -negamax(
+            // late move reductions
+            let mut r = 0;
+            if depth >= LMR_MIN_DEPTH
+                && i >= LMR_MIN_MOVES
+                && quiet
+                && !in_check
+                && !gives_check
+                && !is_killer
+            {
+                r = control.lmr[depth.min(63) as usize][i.min(63)];
+                // r = 1;  // <- use this instead of the table for the first SPRT
+                if pv_node {
+                    r -= 1;
+                }
+                r = r.clamp(0, depth - 2); // reduced search never drops below depth 1
+            }
+
+            // 1) (possibly reduced) null-window search
+            score = -negamax(
                 board,
                 child_hash,
-                depth - 1,
+                new_depth - r,
                 ply + 1,
                 -alpha - 1,
                 -alpha,
@@ -522,17 +567,34 @@ fn negamax(
                 ztable,
                 tt,
                 killers,
+                history,
                 control,
-            )
-        };
+            );
 
-        if i != 0 && score > alpha && score < beta {
-            // full search needed
-            if !control.aborted {
+            // 2) reduced move beat alpha: verify at full depth, still null window
+            if r > 0 && score > alpha && !control.aborted {
                 score = -negamax(
                     board,
                     child_hash,
-                    depth - 1,
+                    new_depth,
+                    ply + 1,
+                    -alpha - 1,
+                    -alpha,
+                    true,
+                    ztable,
+                    tt,
+                    killers,
+                    history,
+                    control,
+                );
+            }
+
+            // 3) still inside the window (PV node): get the exact score
+            if score > alpha && score < beta && !control.aborted {
+                score = -negamax(
+                    board,
+                    child_hash,
+                    new_depth,
                     ply + 1,
                     -beta,
                     -alpha,
@@ -540,8 +602,9 @@ fn negamax(
                     ztable,
                     tt,
                     killers,
+                    history,
                     control,
-                )
+                );
             }
         }
 
@@ -559,14 +622,29 @@ fn negamax(
         }
 
         if alpha >= beta {
-            //tests whether the move was a capture
-            if !board.is_piece(mv.get_to()) {
+            if quiet {
+                let history_bonus = (depth * depth).min(1200);
+                update_history(
+                    &mut history[side as usize][mv.get_from() as usize][mv.get_to() as usize],
+                    history_bonus,
+                );
+                for q in &quiets_tried[..n_quiets] {
+                    update_history(
+                        &mut history[side as usize][q.get_from() as usize][q.get_to() as usize],
+                        -history_bonus,
+                    );
+                }
                 if p < killers.len() && killers[p][0] != mv {
                     killers[p][1] = killers[p][0];
                     killers[p][0] = mv;
                 }
             }
             break;
+        }
+
+        if quiet && n_quiets < 64 {
+            quiets_tried[n_quiets] = mv;
+            n_quiets += 1;
         }
     }
 
@@ -578,7 +656,6 @@ fn negamax(
         Bound::Exact
     };
 
-    // replacement policy lives inside store()
     tt.store(hash, depth, score_to_tt(best, ply), bound, best_move);
 
     best
@@ -669,34 +746,29 @@ fn score_moves_full(
     scores: &mut [i32; 218],
     tt_move: Option<Move>,
     killers: [Move; 2],
+    history: &[[[i32; 64]; 64]; 2],
 ) -> usize {
-    let mut k = 0;
+    let side = if board.state & WHITE_TO_MOVE != 0 {
+        Side::White
+    } else {
+        Side::Black
+    };
     for i in 0..moves.len {
         let mv = moves.data[i];
 
-        let score = if tt_move == Some(mv) {
+        scores[i] = if tt_move == Some(mv) {
             -INFINITY
         } else if board.is_piece(mv.get_to()) {
             let victim = material_value(get_piece(board, mv.get_to()).piece_type);
             let attacker = material_value(get_piece(board, mv.get_from()).piece_type);
-            -(victim * 10 + (6 - attacker))
+            -(1_000_000 + (victim * 10 + (6 - attacker)))
         } else if mv == killers[0] || mv == killers[1] {
-            -1
+            -900_000
         } else {
-            0
+            -history[side as usize][mv.get_from() as usize][mv.get_to() as usize]
         };
-
-        if score != 0 {
-            // data[k] is a quiet move already scored 0, so it goes to i with 0
-            moves.data.swap(k, i);
-            scores[i] = 0;
-            scores[k] = score; // set after scores[i] so k == i still works
-            k += 1;
-        } else {
-            scores[i] = 0;
-        }
     }
-    k
+    moves.len
 }
 
 fn score_moves_mvv_lva_tt(
