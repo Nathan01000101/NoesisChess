@@ -270,6 +270,11 @@ impl Player for Engine {
                 break;
             }
 
+            // if we've found #1, don't waste time searching further
+            if depth_best_score == MATE - 1 {
+                return best_move;
+            }
+
             current_depth += 1;
             if current_depth > self.depth as i32 {
                 break; // dont exceed max depth
@@ -517,7 +522,6 @@ fn negamax(
 
         let undo = make_move(board, mv);
         let child_hash = ztable.update_hash(hash, board, mv, &undo);
-        let gives_check = is_in_check(board, opponent);
         let new_depth = depth - 1;
 
         let mut score;
@@ -540,19 +544,17 @@ fn negamax(
         } else {
             // late move reductions
             let mut r = 0;
-            if depth >= LMR_MIN_DEPTH
-                && i >= LMR_MIN_MOVES
-                && quiet
-                && !in_check
-                && !gives_check
-                && !is_killer
-            {
-                r = control.lmr[depth.min(63) as usize][i.min(63)];
-                // r = 1;  // <- use this instead of the table for the first SPRT
-                if pv_node {
-                    r -= 1;
+            if depth >= LMR_MIN_DEPTH && i >= LMR_MIN_MOVES && quiet && !in_check && !is_killer {
+                // only compute this if rest of LMR conditions are true, saves a few computations
+                let gives_check = is_in_check(board, opponent);
+
+                if !gives_check {
+                    r = control.lmr[depth.min(63) as usize][i.min(63)];
+                    if pv_node {
+                        r -= 1;
+                    }
+                    r = r.clamp(0, depth - 2); // reduced search never drops below depth 1
                 }
-                r = r.clamp(0, depth - 2); // reduced search never drops below depth 1
             }
 
             // 1) (possibly reduced) null-window search
