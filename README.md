@@ -2,7 +2,7 @@
 
 **by: Nathan E**
 
-Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~1800** elo.
+Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~2000** elo.
 
 
 ## Running the Program
@@ -25,19 +25,7 @@ Double-clicking the executable or running without specification will start an in
 
 ### Depth:
 
-this field sets the max depth the engine will try to search. The default is 12 and it tends to not reach 12 in most games. The average time to reach a depth of 10 is around 8-10s, if you are looking for faster, less deep searches use this field and use the following for rough reference, keep in mind times **will** vary:
-
-**depth 1-4:** *~1-2ms*
-
-**depth 5-7:** *~10-1000ms*
-
-**depth 8:** *~0.8s-2s*
-
-**depth 9:** *~1s-4s*
-
-**depth 10:** *~5-10s*
-
-**depth 11- :** *~10s-*
+this field sets the max depth the engine will try to search. The default is 40 however it tends to only reach depth 14-18 in classical games with max 5s of thinking.
 
 
 ### Fen Positions
@@ -59,7 +47,7 @@ an example of a fen position, specifically the starting position of a chess boar
 - `./Noesis --fen "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2" --gui` 	*This will start a game with a human playing white, Noesis playing black in a sicilian*
 
 
-## About the AI
+## About the AI (for nerds)
 
 The Engine's backbone is it's **negamax algorithm**, used to score moves. The negamax algorithm looks like this in pseudo-code 
 
@@ -108,4 +96,4 @@ const PAWN_TABLE: [[i32; 8]; 8] = [
 ```
 
 ## Move Generation
-To be able to achieve a NPS of 10M, you need a well optimized move generation to rely on. Prior to this release, Noesis' move generation relied on ray marching, a slow and costly way to determine if a move can be made or not. On top of that, the previous versions also never did any pre-computing to store move info for a sliding piece like bishops, rook, or queens. Now Noesis can rely on a move generator that pre-computes all possible moves for any sliding piece that already computed every possible combination of pieces that could block its ray, leaving us with the valid moves for all pieces even before the program runs. This leaves the move generator little to do at runtime, maximizing performance.
+To be able to achieve a NPS of 7M, you need a well optimized move generation to rely on. Prior to this release, Noesis' move generation relied on ray marching, a slow and costly way to determine if a move can be made or not. On top of that, the previous versions also never did any pre-computing to store move info for a sliding piece like bishops, rook, or queens. Now Noesis can rely on a move generator that pre-computes all possible moves for any sliding piece that already computed every possible combination of pieces that could block its ray, leaving us with the valid moves for all pieces even before the program runs. This leaves the move generator little to do at runtime, maximizing performance.

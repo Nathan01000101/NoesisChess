@@ -3,8 +3,7 @@ use std::fmt::Write;
 use crate::types;
 use crate::types::{
     BLACK_LONG, BLACK_SHORT, Bitboard, Board, CASTLE_MOVE, EN_PASSANT_MOVE, Move, NORMAL_MOVE,
-    PROMOTION_BISHOP, PROMOTION_KNIGHT, PROMOTION_MOVE, PROMOTION_QUEEN, Piece, PieceType, Side,
-    Undo, WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE,
+    PROMOTION_MOVE, Piece, PieceType, Side, Undo, WHITE_LONG, WHITE_SHORT, WHITE_TO_MOVE,
 };
 
 const CASTLE_MASK: [u8; 64] = {

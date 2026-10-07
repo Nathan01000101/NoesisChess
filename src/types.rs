@@ -49,28 +49,13 @@ impl Move {
         (self.0 & 0x3F) as u8
     } // __XXXXXX
 
-    pub fn set_from(mut self, sq: u8) {
-        self.0 ^= 0x3F;
-        self.0 |= sq as u16;
-    }
-
     pub fn get_to(self) -> u8 {
         ((self.0 >> 6) & 0x3F) as u8
     } // __XXXXXX
 
-    pub fn set_to(mut self, sq: u8) {
-        self.0 ^= 0x3F << 6;
-        self.0 |= (sq as u16) << 6;
-    }
-
     pub fn get_flags(self) -> u8 {
         (self.0 >> 12) as u8
     } // ____XXXX
-
-    pub fn set_flags(mut self, flags: u8) {
-        self.0 ^= 0xF << 12;
-        self.0 |= (flags as u16) << 12;
-    }
 }
 
 pub struct MoveBuf {

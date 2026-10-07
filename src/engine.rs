@@ -10,7 +10,7 @@ use crate::board::{
     castle_rook_squares, ep_victim_square, get_piece, has_non_pawn_piece, make_move, to_fen,
     undo_move,
 };
-use crate::eval::{eval_stm, material_value};
+use crate::eval::{MATE, eval_stm, format_eval, material_value};
 use crate::movegen::{find_legal_move, get_all_captures, get_all_moves, is_in_check};
 use crate::types;
 use crate::types::{
@@ -22,11 +22,10 @@ use macroquad::miniquad::date;
 use macroquad::prelude::*;
 
 const MOVE_REPETITION_PENALTY: i32 = 25;
-const TT_SIZE_MB: usize = 256; // rounded down to a power of two worth of buckets
+const TT_SIZE_MB: usize = 128; // rounded down to a power of two worth of buckets
 const NODES_PER_TIME_CHECK: u64 = 0x7FF; // check clock every 2048 nodes
 
 const INFINITY: i32 = 10_000_000;
-const MATE: i32 = 500_000;
 const MATE_THRESHOLD: i32 = MATE - 1_000; // |score| above this means "this is a mate score"
 
 // Null move pruning knobs.
@@ -240,12 +239,11 @@ impl Player for Engine {
                 best_move_idx = depth_best_move_idx;
                 best_hash = depth_best_hash;
 
-                // UCI info
                 println!(
-                    "info depth {} time {} score cp {} nodes {} nps {} hashfull {}",
+                    "info depth {} time {} score {} nodes {} nps {} hashfull {}",
                     current_depth,
                     start.elapsed().as_millis(),
-                    depth_best_score,
+                    format_eval(depth_best_score),
                     control.nodes,
                     (control.nodes as f32 / start.elapsed().as_secs_f32()) as i32,
                     tt.hashfull()

@@ -15,12 +15,11 @@ use crate::human::HumanPlayer;
 use crate::movegen::{find_legal_move, get_move_count, is_in_check};
 use crate::render::{draw_board, draw_moves, draw_pieces};
 use crate::types::{
-    Board, CASTLE_MOVE, EN_PASSANT_MOVE, Move, MoveContext, PROMOTION_MOVE, Piece, PieceType, Side,
-    Undo, WHITE_TO_MOVE,
+    Board, Move, MoveContext, PROMOTION_MOVE, Piece, PieceType, Side, Undo, WHITE_TO_MOVE,
 };
 use crate::*;
 
-const ENGINE_NAME: &str = "Noesis 0.31";
+const ENGINE_NAME: &str = "Noesis 0.4";
 const ENGINE_AUTHORS: &str = "Nathan E.";
 
 struct MoveOutcome {

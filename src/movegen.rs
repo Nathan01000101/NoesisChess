@@ -188,11 +188,6 @@ fn is_attacked(board: &Board, square: u8, by: Side, occupied: u64) -> bool {
     false
 }
 
-// determines if a given square is attacked by a given side
-pub fn is_square_attacked(board: &Board, square: u8, side: Side) -> bool {
-    is_attacked(board, square, side, board.occupied)
-}
-
 // determines if a side is in check with a given board state
 pub fn is_in_check(board: &Board, side: Side) -> bool {
     let king = pieces(board, side, PieceType::King).trailing_zeros() as u8;
@@ -479,11 +474,6 @@ pub fn get_all_captures(board: &mut Board, side: Side, buffer: &mut MoveListBuf)
     generate(board, side, GenMode::Captures, buffer);
 }
 
-// gets all moves for a side that aren't captures (or queen promotions)
-pub fn get_all_quiets(board: &mut Board, side: Side, buffer: &mut MoveListBuf) {
-    generate(board, side, GenMode::Quiets, buffer);
-}
-
 // gets num of moves that a side can make
 pub fn get_move_count(board: &mut Board, side: Side) -> u8 {
     let mut buf = MoveListBuf::new();
@@ -527,14 +517,8 @@ pub fn find_legal_move(
 }
 
 // ---------------------------------------------------------------------------
-// per-piece API, kept for the GUI / standalone callers. Not  to be used by the search.
+// per-piece API, kept for the GUI / standalone callers. Not  to be used by the search, super inefficient
 // ---------------------------------------------------------------------------
-
-// is the piece on square pinned?
-pub fn is_pinned(board: &Board, square: u8, friendly_side: Side) -> bool {
-    let king_square = pieces(board, friendly_side, PieceType::King).trailing_zeros() as u8;
-    pinned_pieces(board, friendly_side, king_square) & (1u64 << square) != 0
-}
 
 // propagates list with possible moves for piece on square
 pub fn get_pseudo_legal_moves(board: &Board, square: u8, list: &mut MoveBuf) {
