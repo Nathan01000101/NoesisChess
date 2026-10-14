@@ -1,8 +1,8 @@
-# Noesis 0.3 Release
+# Noesis 0.4 Release
 
 **by: Nathan E**
 
-Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~2000** elo.
+Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~2100** Elo.
 
 
 ## Running the Program
