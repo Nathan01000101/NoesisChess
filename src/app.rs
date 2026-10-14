@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::Duration;
-use std::{process, thread};
 
 use macroquad::audio::play_sound_once;
 use macroquad::prelude::*;
 
+use crate::WINDOW_SIZE;
 use crate::ai::Player;
 use crate::assets::{self, Assets};
 use crate::board::{from_fen, get_piece, make_move, new_board};
@@ -15,11 +16,11 @@ use crate::human::HumanPlayer;
 use crate::movegen::{find_legal_move, get_move_count, is_in_check};
 use crate::render::{draw_board, draw_moves, draw_pieces};
 use crate::types::{
-    Board, Move, MoveContext, PROMOTION_MOVE, Piece, PieceType, Side, Undo, WHITE_TO_MOVE,
+    self, Board, Move, MoveContext, PROMOTION_MOVE, Piece, PieceType, Side, Undo, WHITE_TO_MOVE,
 };
-use crate::*;
+use crate::zobrist::ZobristTable;
 
-const ENGINE_NAME: &str = "Noesis 0.4";
+const ENGINE_NAME: &str = "Noesis 0.5";
 const ENGINE_AUTHORS: &str = "Nathan E.";
 
 struct MoveOutcome {
@@ -77,6 +78,45 @@ fn handle_move_made(
     }
 }
 
+pub fn highlight_last_move(board_flipped: bool, mv: Move, tile_size: f32, move_color: Color) {
+    let to_file = if board_flipped {
+        7 - (mv.get_to() % 8)
+    } else {
+        mv.get_to() % 8
+    };
+    let to_rank = if board_flipped {
+        mv.get_to() / 8
+    } else {
+        7 - (mv.get_to() / 8)
+    };
+
+    let from_file = if board_flipped {
+        7 - (mv.get_from() % 8)
+    } else {
+        mv.get_from() % 8
+    };
+    let from_rank = if board_flipped {
+        mv.get_from() / 8
+    } else {
+        7 - (mv.get_from() / 8)
+    };
+
+    draw_rectangle(
+        to_file as f32 * tile_size,
+        to_rank as f32 * tile_size,
+        tile_size,
+        tile_size,
+        move_color,
+    );
+    draw_rectangle(
+        from_file as f32 * tile_size,
+        from_rank as f32 * tile_size,
+        tile_size,
+        tile_size,
+        move_color,
+    );
+}
+
 pub async fn run(config: Config) {
     let tile_size: f32 = WINDOW_SIZE / 8.0;
     let assets = assets::load().await;
@@ -114,6 +154,9 @@ pub async fn run(config: Config) {
     let mut move_history: Vec<Undo> = Vec::new();
     let mut last_move: Option<Move> = None;
 
+    let mut game_hashes: Vec<u64> = Vec::new();
+    let zobrist = ZobristTable::new();
+
     let mut start = std::time::Instant::now();
     loop {
         // restart
@@ -134,10 +177,6 @@ pub async fn run(config: Config) {
                 black_wins += 0.5;
             }
             println!("white wins: {}\nblack wins: {}", white_wins, black_wins);
-            if (white_wins + black_wins) as usize >= config.game_limit {
-                println!("Game Limit Reached");
-                process::exit(0);
-            }
             thinking = None;
             winner = None;
             last_move = None;
@@ -181,6 +220,7 @@ pub async fn run(config: Config) {
                     if let Some(mv) = find_legal_move(&mut board, from, square, None) {
                         let move_info = make_move(&mut board, mv);
                         move_history.push(move_info.clone());
+                        game_hashes.push(zobrist.hash(&board));
                         last_move = Some(mv);
 
                         let is_white = Arc::ptr_eq(current_player, &player1);
@@ -230,11 +270,14 @@ pub async fn run(config: Config) {
                 let player = Arc::clone(current_player);
                 let context = MoveContext {
                     board: board.clone(),
-                    wtime: wtime,
-                    btime: btime,
+                    game_hashes: game_hashes.clone(),
+                    wtime: Duration::from_secs(0),
+                    btime: Duration::from_secs(0),
                     winc: winc,
                     binc: binc,
                     moves_to_go: -1,
+                    max_nodes: 0,
+                    depth: 10,
                 };
                 let (tx, rx) = mpsc::channel();
                 thread::spawn(move || {
@@ -248,6 +291,7 @@ pub async fn run(config: Config) {
                 if let Ok(mv) = rx.try_recv() {
                     let move_info = make_move(&mut board, mv);
                     move_history.push(move_info.clone());
+                    game_hashes.push(zobrist.hash(&board));
                     last_move = Some(mv);
 
                     let is_white = Arc::ptr_eq(current_player, &player1);
@@ -289,37 +333,7 @@ pub async fn run(config: Config) {
         clear_background(WHITE);
         draw_board(tile_size);
         if let Some(lm) = last_move {
-            if board_flipped {
-                draw_rectangle(
-                    (7 - (lm.get_from() % 8)) as f32 * tile_size,
-                    (lm.get_from() / 8) as f32 * tile_size,
-                    tile_size,
-                    tile_size,
-                    move_color,
-                );
-                draw_rectangle(
-                    (7 - (lm.get_to() % 8)) as f32 * tile_size,
-                    (lm.get_to() / 8) as f32 * tile_size,
-                    tile_size,
-                    tile_size,
-                    move_color,
-                );
-            } else {
-                draw_rectangle(
-                    (lm.get_from() % 8) as f32 * tile_size,
-                    (7 - (lm.get_from() / 8)) as f32 * tile_size,
-                    tile_size,
-                    tile_size,
-                    move_color,
-                );
-                draw_rectangle(
-                    (lm.get_to() % 8) as f32 * tile_size,
-                    (7 - (lm.get_to() / 8)) as f32 * tile_size,
-                    tile_size,
-                    tile_size,
-                    move_color,
-                );
-            }
+            highlight_last_move(board_flipped, lm, tile_size, move_color);
         }
         if let Some(coords) = selected_coords {
             if board.is_piece(coords) {
@@ -334,11 +348,7 @@ pub async fn run(config: Config) {
             }
         }
 
-        let stm = if board.state & WHITE_TO_MOVE != 0 {
-            Side::White
-        } else {
-            Side::Black
-        };
+        let stm = board.side_to_move();
         if is_in_check(&board, stm) {
             let king_bit = board.bitboards[stm as usize][PieceType::King as usize]
                 .0
@@ -384,6 +394,7 @@ pub async fn run(config: Config) {
 pub fn run_headless(config: Config) {
     let ai_instance: Engine = Engine::new(config.depth);
     let mut board = new_board();
+    let mut hashes = Vec::new();
 
     loop {
         let mut input = String::new();
@@ -407,9 +418,9 @@ pub fn run_headless(config: Config) {
             "isready" => println!("readyok"),
             "ucinewgame" => ai_instance.reset(),
             "quit" => break,
-            "position" => board = handle_uci_position(&parts[1..]),
+            "position" => (board, hashes) = handle_uci_position(&parts[1..]),
             "go" => {
-                let mv = handle_uci_go(&parts[1..], &board, &ai_instance);
+                let mv = handle_uci_go(&parts[1..], &board, &hashes, &ai_instance);
                 make_move(&mut board, mv);
             }
             _ => println!("command not found."),
@@ -477,16 +488,20 @@ fn parse_uci_move(board: &mut Board, s: &str) -> Option<Move> {
     };
     find_legal_move(board, from, to, promo)
 }
-fn handle_uci_position(tokens: &[&str]) -> Board {
+fn handle_uci_position(tokens: &[&str]) -> (Board, Vec<u64>) {
     let mut board;
+    let mut hashes = Vec::new();
+    let zobrist = ZobristTable::new();
     let mut idx;
 
     if tokens[0] == "startpos" {
         board = new_board();
+        hashes.push(zobrist.hash(&board));
         idx = 1;
     } else if tokens[0] == "fen" {
         let fen = tokens[1..7].join(" "); // FEN is always 6 fields
         board = from_fen(&fen);
+        hashes.push(zobrist.hash(&board));
         idx = 7;
     } else {
         panic!("malformed position command");
@@ -497,18 +512,21 @@ fn handle_uci_position(tokens: &[&str]) -> Board {
         for mv_str in &tokens[idx..] {
             let mv = parse_uci_move(&mut board, mv_str);
             make_move(&mut board, mv.unwrap());
+            hashes.push(zobrist.hash(&board));
         }
     }
 
-    board
+    (board, hashes)
 }
 
-fn handle_uci_go(tokens: &[&str], board: &Board, ai: &Engine) -> Move {
+fn handle_uci_go(tokens: &[&str], board: &Board, hashes: &Vec<u64>, ai: &Engine) -> Move {
     let mut wtime = Duration::from_millis(0);
     let mut btime = Duration::from_millis(0);
     let mut winc = Duration::from_millis(0);
     let mut binc = Duration::from_millis(0);
     let mut moves_to_go = 0;
+    let mut max_nodes = 0;
+    let mut depth = 0;
     let mut i = 0;
     while i < tokens.len() {
         let val = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok());
@@ -539,9 +557,20 @@ fn handle_uci_go(tokens: &[&str], board: &Board, ai: &Engine) -> Move {
             }
             "movestogo" => {
                 if let Some(v) = val {
-                    moves_to_go = v
+                    moves_to_go = v as i32
                 }
                 i += 2;
+            }
+            "nodes" => {
+                if let Some(v) = val {
+                    max_nodes = v as u64
+                }
+                i += 2;
+            }
+            "depth" => {
+                if let Some(v) = val {
+                    depth = v as u8;
+                }
             }
             _ => {
                 i += 1;
@@ -551,11 +580,14 @@ fn handle_uci_go(tokens: &[&str], board: &Board, ai: &Engine) -> Move {
 
     let context = MoveContext {
         board: board.clone(),
-        wtime: wtime,
-        btime: btime,
-        winc: winc,
-        binc: binc,
-        moves_to_go: moves_to_go as i32,
+        game_hashes: hashes.clone(),
+        wtime,
+        btime,
+        winc,
+        binc,
+        moves_to_go,
+        max_nodes,
+        depth,
     };
     let mv = ai.get_move(context);
     println!("bestmove {}", move_to_uci(mv));

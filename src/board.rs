@@ -52,6 +52,7 @@ pub fn get_side_bitboard(board: &Board, side: Side) -> Bitboard {
     bitboard
 }
 
+// turns a 'fen' into a board and returns it
 pub fn from_fen(fen: &str) -> Board {
     let mut board = Board {
         bitboards: [[Bitboard::EMPTY; 6]; 2],
@@ -118,7 +119,7 @@ pub fn from_fen(fen: &str) -> Board {
         board.en_passant_target = Some(ep_rank * 8 + ep_file);
     }
 
-    let _halfmove = parts[4].parse::<u16>().unwrap();
+    board.half_moves = parts[4].parse::<u16>().unwrap_or(0);
 
     let fullmove = parts[5].parse::<u8>().unwrap();
     let ply_offset = if turn.starts_with('b') { 1 } else { 0 };
@@ -127,6 +128,7 @@ pub fn from_fen(fen: &str) -> Board {
     board
 }
 
+// turns a 'board' into a fen and returns it
 pub fn to_fen(board: &Board) -> String {
     let mut s = String::with_capacity(80);
 
@@ -272,7 +274,14 @@ pub fn make_move(board: &mut Board, mv: Move) -> Undo {
         captured_piece: board.mailbox[captured_sq as usize],
         previous_en_passant_target: board.en_passant_target,
         previous_state: board.state,
+        previous_half_moves: board.half_moves,
     };
+
+    if piece_type_before == PieceType::Pawn || undo.captured_piece.is_some() {
+        board.half_moves = 0;
+    } else {
+        board.half_moves += 1;
+    }
 
     board.en_passant_target = None;
     if board.state & WHITE_TO_MOVE == 0 {
@@ -348,6 +357,7 @@ pub fn undo_move(board: &mut Board, mv: Move, undo: Undo) {
     if board.state & WHITE_TO_MOVE == 0 {
         board.moves -= 1;
     }
+    board.half_moves = undo.previous_half_moves;
 
     // the piece as it stands now (maybe a promoted queen)
     let moved = get_piece(board, to);

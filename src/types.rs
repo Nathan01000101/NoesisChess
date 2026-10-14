@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::search::MAX_PLIES;
+
 pub const WHITE_SHORT: u8 = 0b00001;
 pub const WHITE_LONG: u8 = 0b00010;
 pub const BLACK_SHORT: u8 = 0b00100;
@@ -147,6 +149,14 @@ impl Board {
     pub fn is_piece(&self, square: u8) -> bool {
         self.occupied & (1 << square) != 0
     }
+
+    pub fn side_to_move(&self) -> Side {
+        if self.state & WHITE_TO_MOVE != 0 {
+            Side::White
+        } else {
+            Side::Black
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -154,13 +164,22 @@ pub struct Undo {
     pub captured_piece: Option<Piece>, // what piece occupied the square before moving
     pub previous_en_passant_target: Option<u8>, // stores where the en_passant target was before moving
     pub previous_state: u8,
+    pub previous_half_moves: u16,
 }
 
 pub struct MoveContext {
     pub board: Board,
+    pub game_hashes: Vec<u64>,
     pub wtime: Duration,
     pub btime: Duration,
     pub winc: Duration,
     pub binc: Duration,
     pub moves_to_go: i32,
+    pub max_nodes: u64,
+    pub depth: u8,
+}
+
+pub struct GameHistory {
+    pub hashes: [u64; MAX_PLIES + 100], // hashes of the game state before each move
+    pub root: usize,                    // index of root
 }

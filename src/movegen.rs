@@ -13,6 +13,19 @@ const RANK_3: u64 = 0x0000_0000_00FF_0000;
 const RANK_6: u64 = 0x0000_FF00_0000_0000;
 const RANK_8: u64 = 0xFF00_0000_0000_0000;
 
+// king is 0 because it never gets traded
+const SEE_VALUES: [i32; 6] = [0, 900, 500, 300, 300, 100];
+
+// cheapest attacker first
+const SEE_ORDER: [PieceType; 6] = [
+    PieceType::Pawn,
+    PieceType::Knight,
+    PieceType::Bishop,
+    PieceType::Rook,
+    PieceType::Queen,
+    PieceType::King,
+];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GenMode {
     All,
@@ -254,9 +267,9 @@ fn check_mask(board: &Board, king_sq: u8, checkers: u64) -> u64 {
     checkers | between
 }
 
-// --------------------------
-// the move generator ^.^
-// --------------------------
+// ---------------------------------------------------------------------------
+// Move Generator ^.^
+// ---------------------------------------------------------------------------
 
 fn generate(board: &mut Board, side: Side, mode: GenMode, out: &mut MoveListBuf) {
     let enemy = other(side);
@@ -517,7 +530,7 @@ pub fn find_legal_move(
 }
 
 // ---------------------------------------------------------------------------
-// per-piece API, kept for the GUI / standalone callers. Not  to be used by the search, super inefficient
+// per-piece API, kept for the GUI. Not to be used by the search, super inefficient
 // ---------------------------------------------------------------------------
 
 // propagates list with possible moves for piece on square
@@ -666,4 +679,95 @@ pub fn get_valid_moves_standalone(board: &mut Board, square: u8) -> Vec<u8> {
         list.push(buf.data[i]);
     }
     list
+}
+
+// ---------------------------------------------------------------------------
+// static exchange evaluation
+// ---------------------------------------------------------------------------
+
+// does `mv` come out >= to  `threshold` once every capture on its
+// target square is played out, moves cheapest pieces first
+pub fn see_ge(board: &Board, mv: Move, threshold: i32) -> bool {
+    // no en_passant moves because its pawn for pawn
+    // no castling moves because castling cannot capture
+    // maybe in the future we will consider promotion moves, but excluded today
+    if mv.get_flags() & 0b11 != NORMAL_MOVE {
+        return threshold <= 0;
+    }
+
+    let from = mv.get_from();
+    let to = mv.get_to();
+
+    // swap = how much the side to move still has to win for the
+    // exchange to go its way. starts by assuming they don't recapture
+    let victim = if board.is_piece(to) {
+        SEE_VALUES[get_piece(board, to).piece_type as usize]
+    } else {
+        0
+    };
+    let mut swap = victim - threshold;
+    if swap < 0 {
+        return false; // even a free capture doesn't reach the threshold
+    }
+
+    // what we're up if they take our piece back and it stops there
+    swap = SEE_VALUES[get_piece(board, from).piece_type as usize] - swap;
+    if swap <= 0 {
+        return true; // fine even if we lose the piece
+    }
+
+    let mut occupied = board.occupied & !(1u64 << from);
+    let mut attackers = attackers_to(board, to, Side::White, occupied)
+        | attackers_to(board, to, Side::Black, occupied);
+
+    // sliders of both colours for finding x-rays
+    let diagonal = pieces(board, Side::White, PieceType::Bishop)
+        | pieces(board, Side::White, PieceType::Queen)
+        | pieces(board, Side::Black, PieceType::Bishop)
+        | pieces(board, Side::Black, PieceType::Queen);
+    let straight = pieces(board, Side::White, PieceType::Rook)
+        | pieces(board, Side::White, PieceType::Queen)
+        | pieces(board, Side::Black, PieceType::Rook)
+        | pieces(board, Side::Black, PieceType::Queen);
+
+    let mut stm = board.side_to_move();
+    let mut res = true; // true = the side that played `mv` wins the exchange
+
+    loop {
+        stm = other(stm);
+        attackers &= occupied; // drop pieces already used up
+
+        // cheapest piece stm can recapture with
+        let mut found = None;
+        for pt in SEE_ORDER {
+            let bb = attackers & pieces(board, stm, pt);
+            if bb != 0 {
+                found = Some((pt, bb));
+                break;
+            }
+        }
+        let Some((pt, bb)) = found else {
+            break; // exchange is over
+        };
+
+        res = !res;
+
+        if pt == PieceType::King {
+            // the king can only recapture if the other side has nobody left
+            let other_left = attackers & get_side_bitboard(board, other(stm)).0 != 0;
+            return if other_left { !res } else { res };
+        }
+
+        swap = SEE_VALUES[pt as usize] - swap;
+        if swap < res as i32 {
+            break;
+        }
+
+        occupied ^= bb & bb.wrapping_neg(); // remove that attacker (lowest set bit)
+        // anything lined up behind it can now see the square
+        attackers |=
+            (get_bishop_moves(occupied, to) & diagonal) | (get_rook_moves(occupied, to) & straight);
+    }
+
+    res
 }

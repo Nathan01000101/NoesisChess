@@ -12,3 +12,4 @@ rustc-hash = "2"
 
 [profile.release]
 debug = true
+

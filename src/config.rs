@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use crate::ai::Player;
+use crate::engine::Engine;
 use crate::human::HumanPlayer;
-use crate::random_ai::RandomAI;
-use crate::engine::{Engine};
 use crate::*;
 
 pub struct Config {
@@ -12,7 +11,8 @@ pub struct Config {
     pub white: String,
     pub black: String,
     pub gui: bool,
-    pub game_limit: usize
+    pub game_limit: usize,
+    pub data_gen: bool,
 }
 
 impl Config {
@@ -21,50 +21,58 @@ impl Config {
 
         let default_fen = String::from("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let default_white = String::from("human");
-        let default_black = String::from("minimax");
+        let default_black = String::from("noesis");
 
         Config {
-            depth: args.iter()
-        .position(|a| a == "--depth")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|d| d.parse::<usize>().ok())
-        .unwrap_or(MAX_DEPTH),
+            depth: args
+                .iter()
+                .position(|a| a == "--depth")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|d| d.parse::<usize>().ok())
+                .unwrap_or(MAX_DEPTH),
 
-            fen: String::from(args.iter()
-        .position(|a| a == "--fen")
-        .and_then(|i| args.get(i + 1))
-        .map(String::as_str)
-        .unwrap_or(&default_fen)),
+            fen: String::from(
+                args.iter()
+                    .position(|a| a == "--fen")
+                    .and_then(|i| args.get(i + 1))
+                    .map(String::as_str)
+                    .unwrap_or(&default_fen),
+            ),
 
-            white: String::from(args.iter()
-        .position(|a| a == "--white")
-        .and_then(|i| args.get(i + 1))
-        .map(String::as_str)
-        .unwrap_or(&default_white)),
+            white: String::from(
+                args.iter()
+                    .position(|a| a == "--white")
+                    .and_then(|i| args.get(i + 1))
+                    .map(String::as_str)
+                    .unwrap_or(&default_white),
+            ),
 
-            black: String::from(args.iter()
-        .position(|a| a == "--black")
-        .and_then(|i| args.get(i + 1))
-        .map(String::as_str)
-        .unwrap_or(&default_black)),
+            black: String::from(
+                args.iter()
+                    .position(|a| a == "--black")
+                    .and_then(|i| args.get(i + 1))
+                    .map(String::as_str)
+                    .unwrap_or(&default_black),
+            ),
 
             gui: args.iter().any(|a| a == "--gui"),
 
-            game_limit: args.iter()
-        .position(|a| a == "--game_limit")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|d| d.parse::<usize>().ok())
-        .unwrap_or(usize::MAX)
+            game_limit: args
+                .iter()
+                .position(|a| a == "--game_limit")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|d| d.parse::<usize>().ok())
+                .unwrap_or(usize::MAX),
+
+            data_gen: args.iter().any(|a| a == "--datagen"),
         }
     }
 }
 
 pub fn make_player(kind: &str, depth: usize) -> Arc<dyn Player + Send + Sync> {
     match kind {
-        "human"   => Arc::new(HumanPlayer),
-        "random"  => Arc::new(RandomAI),
-        "minimax" => Arc::new(Engine::new(depth)),
+        "human" => Arc::new(HumanPlayer),
+        "noesis" => Arc::new(Engine::new(depth)),
         _ => panic!("unknown player type: {kind}"),
     }
 }
-
