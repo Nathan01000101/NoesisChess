@@ -1,9 +1,30 @@
-# Noesis 0.4 Release
+# Noesis 0.5 Release
 
 **by: Nathan E**
 
-Noesis is a UCI compatible chess engine built in the rust language with a strength of **roughly ~2100** Elo.
+Noesis is a UCI compatible chess engine built in the **Rust** language with a strength of **~2500** elo.
 
+## System Requirements
+
+- AVX2 compatible CPU
+
+## Building the program
+
+in the repo root directory:
+`cargo b -r`
+
+## Using with a Chess GUI
+
+the **working directory** must contain **Noesis.exe**
+
+## Supported UCI commands
+
+- `uci`
+- `isready`
+- `quit`
+- `ucinewgame`
+- `position <fen/startpos> moves <moves>`
+- `go w/btime <time> w/binc <inc> movestogo <movestogo>`
 
 ## Running the Program
 
@@ -14,26 +35,18 @@ Double-clicking the executable or running without specification will start an in
 ##  CLI Specifications
 
 ### Launch program from command line with specification:
-	Noesis --white <white_player> --black <black_player> --depth <depth> --fen <fen_of_position> --gui
+Noesis --white <white_player> --black <black_player> --depth <depth> --fen <fen_of_position> --gui
+
+**Note:** The `--white` and `--black` flags only apply when the `--gui` flag is also passed 
 
 ### Available players:
 
-#### WARNING: the `--gui` flag has to be passed if assigning players, it won't be set automatically
 - `human` - you play with the mouse
 - `minimax` - default AI, searches and evaluates moves and picks the 'best' one
-- `random` - plays a random legal move
 
 ### Depth:
 
-this field sets the max depth the engine will try to search. The default is 40 however it tends to only reach depth 14-18 in classical games with max 5s of thinking.
-
-
-### Fen Positions
-
-fen position notation is used to store a position of a board as well as the board state, the following is 
-an example of a fen position, specifically the starting position of a chess board:
-
-	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+this field sets the max depth the engine will try to search. The default is 40 however it tends to only reach depth 14-20 in classical games with max 5s of thinking.
 
 ## GUI
 - **Click** a piece to select it
@@ -49,12 +62,27 @@ an example of a fen position, specifically the starting position of a chess boar
 
 ## About the AI (for nerds)
 
-The Engine's backbone is it's **negamax algorithm**, used to score moves. The negamax algorithm looks like this in pseudo-code 
+### Features:
+- NNUE (Efficiently Updatable Neural Network)
+- Quiescence Search
+- Late Move Reductions
+- Late Move Pruning
+- Null Move Pruning
+- Static Exchange Evaluation (qsearch + move ordering)
+- Reverse Futility Pruning
+- Iterative Deepening
+- PVS
+- Alpha/Beta Pruning
+- Killer Moves
+- History Heuristic w/ Malus
+- Transposition Table w/ buckets and prefetching
 
-*( with move/board handling omitted for clarity purposes )*:
+The Engine's backbone is its **negamax algorithm**, used to score moves. The following is an example of a negamax algorithm with alpha/beta pruning: 
+
+*( with move/board handling + pruning omitted for clarity purposes )*:
 
 ```rust
-fn negamax(board_state) -> i32{
+fn negamax(board_state, depth, alpha, beta) -> i32{
 	if depth == 0{
 		return evaluate();
 	}
@@ -64,10 +92,14 @@ fn negamax(board_state) -> i32{
 	let moves = get_all_moves();
 
 	for mv in moves{
-		new_eval = -negamax(board_state); // this is the recursive part
+		new_eval = -negamax(board_state, depth - 1, -beta, -alpha); // this is the recursive part
 
-		if new_eval > max_evaluation{ // did the move we just make improve our position
-			max_evaluation = new_eval; // if so, this is the best eval
+		
+		max_evaluation = max_evaluation.max(new_eval);
+		alpha = alpha.max(new_eval); 
+		
+		if beta <= alpha{
+			break; // opponent will end up ahead 
 		}
 	}
 	
@@ -76,24 +108,6 @@ fn negamax(board_state) -> i32{
 
 ```
 
-On top of this, I also use **Alpha-Beta Pruning**, which doesn't inherently lead to better moves per se however, it speeds up the search dramatically by reducing the amount of redundant, unfruitful nodes we have to calculate.
+### Board Evaluation
 
-
-## Board Evaluation
-It is pretty simple, I keep a table of values for which how good a position is for a piece. 2 tables, one for early-mid game and one for late game for each piece except knights because their positioning stays relatively the same within early-late game.. This is what the pawn table looks like:
-
-```rust
-const PAWN_TABLE: [[i32; 8]; 8] = [
-    [ 0,    0,    0,    0,    0,    0,    0,    0   ],  // promotion 
-    [ 90,   90,   90,   90,   90,   90,   90,   90  ],
-    [ 25,   25,   50,   55,   55,   50,   25,   25  ],
-    [ 10,   10,   25,   50,   50,   25,   10,   10  ],
-    [ 5,    5,    25,   45,   45,   25,   5,    5   ],
-    [ 5,    5,    10,   5,    5,   10,    5,    5   ],
-    [ 5,    5,    5,   -10,  -10,   5,    5,    5   ],  // slight penalty for blocking center
-    [ 0,    0,    0,    0,    0,    0,    0,    0   ],  // starting rank
-];
-```
-
-## Move Generation
-To be able to achieve a NPS of 7M, you need a well optimized move generation to rely on. Prior to this release, Noesis' move generation relied on ray marching, a slow and costly way to determine if a move can be made or not. On top of that, the previous versions also never did any pre-computing to store move info for a sliding piece like bishops, rook, or queens. Now Noesis can rely on a move generator that pre-computes all possible moves for any sliding piece that already computed every possible combination of pieces that could block its ray, leaving us with the valid moves for all pieces even before the program runs. This leaves the move generator little to do at runtime, maximizing performance.
+Starting with this release, Noesis uses a 256 neuron **NNUE** trained with [bullet](https://github.com/jw1912/bullet) for its static board evaluation. This NNUE is the second net, trained on 100M positions of training data, assembled by the first net, which was built off my HCE with 20M positions
