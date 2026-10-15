@@ -6,7 +6,6 @@ use std::time::Duration;
 use macroquad::audio::play_sound_once;
 use macroquad::prelude::*;
 
-use crate::WINDOW_SIZE;
 use crate::ai::Player;
 use crate::assets::{self, Assets};
 use crate::board::{from_fen, get_piece, make_move, new_board};
@@ -19,6 +18,7 @@ use crate::types::{
     self, Board, Move, MoveContext, PROMOTION_MOVE, Piece, PieceType, Side, Undo, WHITE_TO_MOVE,
 };
 use crate::zobrist::ZobristTable;
+use crate::{MAX_DEPTH, WINDOW_SIZE};
 
 const ENGINE_NAME: &str = "Noesis 0.5";
 const ENGINE_AUTHORS: &str = "Nathan E.";
@@ -526,7 +526,7 @@ fn handle_uci_go(tokens: &[&str], board: &Board, hashes: &Vec<u64>, ai: &Engine)
     let mut binc = Duration::from_millis(0);
     let mut moves_to_go = 0;
     let mut max_nodes = 0;
-    let mut depth = 0;
+    let mut depth = MAX_DEPTH as u8;
     let mut i = 0;
     while i < tokens.len() {
         let val = tokens.get(i + 1).and_then(|s| s.parse::<u64>().ok());
@@ -571,10 +571,11 @@ fn handle_uci_go(tokens: &[&str], board: &Board, hashes: &Vec<u64>, ai: &Engine)
                 if let Some(v) = val {
                     depth = v as u8;
                 }
+                i += 2;
             }
             _ => {
                 i += 1;
-            } // movetime/depth/infinite not handled yet — ignored, not errored
+            } // movetime/infinite not handled yet — ignored
         }
     }
 

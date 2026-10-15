@@ -2,7 +2,7 @@
 
 **by: Nathan E**
 
-Noesis is a UCI compatible chess engine built in the **Rust** language with a strength of **~2500** elo.
+Noesis is a UCI compatible chess engine built in the **Rust** language with a strength of **~2900** elo.
 
 ## System Requirements
 
@@ -24,7 +24,7 @@ the **working directory** must contain **Noesis.exe**
 - `quit`
 - `ucinewgame`
 - `position <fen/startpos> moves <moves>`
-- `go w/btime <time> w/binc <inc> movestogo <movestogo>`
+- `go w/btime <time> w/binc <inc> movestogo <movestogo> nodes <n> depth <n>`
 
 ## Running the Program
 
