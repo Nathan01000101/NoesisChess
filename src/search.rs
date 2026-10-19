@@ -39,6 +39,9 @@ const NULL_BASE_REDUCTION: i32 = 2;
 const RFP_MAX_DEPTH: i32 = 7;
 const RFP_MARGIN: i32 = 60; // centipawns per ply
 
+// Internal Iterative Reductions
+const IIR_MIN_DEPTH: i32 = 5;
+
 pub const MAX_HISTORY: i32 = 16000;
 
 pub struct Limits {
@@ -287,7 +290,7 @@ impl Searcher {
         &mut self,
         board: &mut Board,
         hash: u64,
-        depth: i32,
+        mut depth: i32,
         ply: i32,
         mut alpha: i32,
         beta: i32,
@@ -325,7 +328,7 @@ impl Searcher {
         }
 
         if depth <= 0 {
-            return self.quiescence(board, ply, alpha, beta);
+            return self.quiescence(board, hash, ply, alpha, beta);
         }
 
         let is_pv = beta - alpha > 1;
@@ -481,13 +484,16 @@ impl Searcher {
                 score = -self.negamax(board, child_hash, depth - 1, ply + 1, -beta, -alpha, true);
             } else {
                 let mut reduction = 0;
+                if depth >= IIR_MIN_DEPTH && tt_move.is_none() {
+                    depth -= 1;
+                }
                 if depth >= LMR_MIN_DEPTH && i >= LMR_MIN_MOVES && quiet && !in_check && !is_killer
                 {
                     // only compute this if rest of LMR conditions are true, saves a bit of time
                     let gives_check = is_in_check(board, opposing);
 
                     if !gives_check {
-                        reduction = self.control.lmr[depth.min(63) as usize][i.min(63)];
+                        reduction += self.control.lmr[depth.min(63) as usize][i.min(63)];
                         if is_pv {
                             reduction -= 1;
                         }
@@ -581,7 +587,14 @@ impl Searcher {
         best.0
     }
 
-    fn quiescence(&mut self, board: &mut Board, ply: i32, mut alpha: i32, beta: i32) -> i32 {
+    fn quiescence(
+        &mut self,
+        board: &mut Board,
+        hash: u64,
+        ply: i32,
+        mut alpha: i32,
+        beta: i32,
+    ) -> i32 {
         if self.control.poll() {
             return 0;
         }
@@ -593,7 +606,31 @@ impl Searcher {
             return evaluate(&self.accumulators[p_idx], side);
         }
 
+        let mut tt_move = None;
+        if let Some(entry) = self.tt.probe(hash) {
+            if entry.best_move != Move::NULL {
+                tt_move = Some(entry.best_move);
+            }
+            if entry.depth as i32 >= 0 {
+                let value = score_from_tt(entry.value, ply);
+                match entry.bound() {
+                    Bound::Exact => return value,
+                    Bound::Lower => {
+                        if value >= beta {
+                            return value;
+                        }
+                    }
+                    Bound::Upper => {
+                        if value <= alpha {
+                            return value;
+                        }
+                    }
+                };
+            }
+        }
+
         let in_check = is_in_check(board, side);
+        let alpha_before = alpha;
         let static_eval = if in_check {
             -INFINITY
         } else {
@@ -601,10 +638,12 @@ impl Searcher {
         };
 
         if static_eval >= beta {
+            self.tt
+                .store(hash, 0, static_eval, Bound::Lower, Move::NULL);
             return static_eval;
         }
         alpha = alpha.max(static_eval);
-        let mut best = static_eval;
+        let mut best = (static_eval, Move::NULL);
 
         let mut moves = MoveListBuf::new();
         let mut scores = [0; 218];
@@ -620,10 +659,10 @@ impl Searcher {
                 // mate!
                 return -MATE + ply;
             }
-            return best;
+            return best.0;
         }
 
-        score_moves_mvv_lva(board, &moves, &mut scores);
+        score_moves_mvv_lva_tt(board, &moves, &mut scores, tt_move);
 
         for i in 0..moves.len {
             pick_move(&mut moves, &mut scores, i, moves_len);
@@ -636,26 +675,42 @@ impl Searcher {
             }
 
             let undo = make_move(board, mv);
+            let child_hash = self.zobrist.update_hash(hash, board, mv, &undo);
+            self.tt.prefetch(child_hash);
 
             // update accumulators
             self.accumulators[p_idx + 1] = self.accumulators[p_idx];
             apply_move(&mut self.accumulators[p_idx + 1], board, mv, &undo);
 
-            let score = -self.quiescence(board, ply + 1, -beta, -alpha);
+            let score = -self.quiescence(board, child_hash, ply + 1, -beta, -alpha);
 
             undo_move(board, mv, undo);
             if self.control.aborted {
                 return 0;
             }
 
-            best = best.max(score);
+            if score > best.0 {
+                best = (score, mv);
+            }
             alpha = alpha.max(score);
 
             if alpha >= beta {
                 break;
             }
         }
-        best
+
+        // store in TT
+        let bound = if best.0 <= alpha_before {
+            Bound::Upper
+        } else if best.0 >= beta {
+            Bound::Lower
+        } else {
+            Bound::Exact
+        };
+
+        self.tt.store(hash, 0, best.0, bound, best.1);
+
+        best.0
     }
 
     fn is_repetition(&self, idx: usize, half_moves: u16) -> bool {

@@ -39,22 +39,15 @@ pub struct Network {
     output_bias: i16,
 }
 
+// the SIMD path eats 16 i16s per step, so the hidden layer must divide evenly
+const _: () = assert!(HIDDEN_SIZE % 16 == 0);
+
 impl Network {
     /// Calculates the output of the network, starting from the already
     /// calculated hidden layer (done efficiently during makemoves).
     pub fn evaluate(&self, us: &Accumulator, them: &Accumulator) -> i32 {
-        // Initialise output.
-        let mut output = 0;
-
-        // Side-To-Move Accumulator -> Output.
-        for (&input, &weight) in us.vals.iter().zip(&self.output_weights[..HIDDEN_SIZE]) {
-            output += screlu(input) * i32::from(weight);
-        }
-
-        // Not-Side-To-Move Accumulator -> Output.
-        for (&input, &weight) in them.vals.iter().zip(&self.output_weights[HIDDEN_SIZE..]) {
-            output += screlu(input) * i32::from(weight);
-        }
+        // sum of screlu(acc) * weight over both perspectives, at QA * QA * QB
+        let mut output = self.screlu_dot(us, them);
 
         // Reduce quantization from QA * QA * QB to QA * QB.
         output /= i32::from(QA);
@@ -69,6 +62,77 @@ impl Network {
         output /= i32::from(QA) * i32::from(QB);
 
         output
+    }
+
+    #[inline]
+    fn screlu_dot(&self, us: &Accumulator, them: &Accumulator) -> i32 {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        {
+            // SAFETY: avx2 is enabled at compile time (target-cpu=x86-64-v3)
+            unsafe { screlu_dot_avx2(&us.vals, &them.vals, &self.output_weights) }
+        }
+    }
+}
+
+/// Reference version: screlu(x) * w, accumulated in i32.
+/// Used as the fallback on non-AVX2 builds, and as the ground truth in tests.
+#[allow(dead_code)]
+fn screlu_dot_scalar(
+    us: &[i16; HIDDEN_SIZE],
+    them: &[i16; HIDDEN_SIZE],
+    weights: &[i16; 2 * HIDDEN_SIZE],
+) -> i32 {
+    let mut output: i32 = 0;
+    for (&input, &weight) in us.iter().zip(&weights[..HIDDEN_SIZE]) {
+        output = output.wrapping_add(screlu(input) * i32::from(weight));
+    }
+    for (&input, &weight) in them.iter().zip(&weights[HIDDEN_SIZE..]) {
+        output = output.wrapping_add(screlu(input) * i32::from(weight));
+    }
+    output
+}
+
+/// Lizard SCReLU: computes clamp(x)^2 * w as (clamp(x) * w) * clamp(x).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline]
+unsafe fn screlu_dot_avx2(
+    us: &[i16; HIDDEN_SIZE],
+    them: &[i16; HIDDEN_SIZE],
+    weights: &[i16; 2 * HIDDEN_SIZE],
+) -> i32 {
+    use std::arch::x86_64::*;
+    const LANES: usize = 16; // i16s per 256-bit register
+
+    unsafe {
+        let zero = _mm256_setzero_si256();
+        let qa = _mm256_set1_epi16(QA);
+        let mut sum = _mm256_setzero_si256(); // 8 x i32
+
+        for (acc, w) in [
+            (us, &weights[..HIDDEN_SIZE]),
+            (them, &weights[HIDDEN_SIZE..]),
+        ] {
+            let mut i = 0;
+            while i < HIDDEN_SIZE {
+                let x = _mm256_loadu_si256(acc.as_ptr().add(i) as *const __m256i);
+                let wv = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
+
+                let y = _mm256_min_epi16(_mm256_max_epi16(x, zero), qa); // clamp(x, 0, QA)
+                let yw = _mm256_mullo_epi16(y, wv); // y * w, fits in i16
+                let prod = _mm256_madd_epi16(yw, y); // (y * w) * y, pairs summed into i32
+
+                sum = _mm256_add_epi32(sum, prod);
+                i += LANES;
+            }
+        }
+
+        // horizontal sum of the 8 i32 lanes
+        let lo = _mm256_castsi256_si128(sum);
+        let hi = _mm256_extracti128_si256::<1>(sum);
+        let s = _mm_add_epi32(lo, hi); // 4 lanes
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s)); // 2 lanes
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s)); // 1 lane
+        _mm_cvtsi128_si32(s)
     }
 }
 
